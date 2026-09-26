@@ -10,7 +10,7 @@ Thank you for your interest in contributing! This document outlines the process 
 - [Code Style Guidelines](#code-style-guidelines)
 - [Branch Naming Conventions](#branch-naming-conventions)
 - [Pull Request Process](#pull-request-process)
-- [Dependency Vulnerability Triage](#dependency-vulnerability-triage)
+- [Local Secret Scanning](#local-secret-scanning)
 - [Testing](#testing)
 - [Reporting Bugs](#reporting-bugs)
 - [Requesting Features](#requesting-features)
@@ -27,7 +27,7 @@ Be respectful, collaborative, and constructive. Harassment, offensive comments, 
 
 ### Prerequisites
 
-- **Node.js** v18 or higher
+- **Node.js** 20.18.0 (pinned in `.nvmrc` / `.node-version`; CI and the Render Blueprint pin the same version)
 - **Rust** (latest stable) for smart contract development
 - **Soroban CLI** — `cargo install --locked soroban-cli`
 - **Freighter Wallet** browser extension (for frontend testing)
@@ -221,92 +221,123 @@ Closes #XX
 
 ---
 
-## Dependency Vulnerability Triage
+## Local Secret Scanning
 
-`npm audit` and `cargo audit` run in CI on every push and pull request, via
-`.github/workflows/dependency-audit.yml`. The gate fails on any **high** or **critical** finding
-that is not already recorded in `.github/dependency-audit-baseline.json`, and on any **Rust**
-vulnerability (advisory severity `error` or `warn`).
+`backend/.env.example` and `frontend/.env.example` are templates — the real `.env` files stay on
+your machine and must never be committed. Three layers guard against committing one by accident.
 
-### The baseline is a ratchet, not a waiver
+### 1. CI (always on, no setup)
 
-The repository inherited 64 high/critical npm findings before this check existed. Recording them
-means CI goes green while the backlog is worked down, instead of going permanently red and being
-ignored. The baseline is deliberately one-directional:
+[`.github/workflows/gitleaks.yml`](.github/workflows/gitleaks.yml) runs
+[gitleaks](https://github.com/gitleaks/gitleaks) over the **full commit history on every pull
+request**, to any base branch, and on pushes to `main`/`dev`. It fails the PR when it finds a
+secret. The same job also fails if a real `.env` file is tracked in git — only
+`.env.example`, `.env.template`, and `.env.sample` are allowed.
 
-| Change | Result |
-| --- | --- |
-| New high/critical finding introduced | **CI fails** |
-| Existing finding fixed | CI fails until the baseline is updated (it refuses stale entries) |
-| Baseline entry deleted by hand | Allowed — fewer findings always passes |
+CI is the authoritative gate. Even with no local tooling, a secret cannot merge.
 
-So the baseline can only shrink over time. After any dependency upgrade, refresh it with:
+### 2. Pre-commit hook (optional, recommended)
+
+The [husky](https://typicode.github.io/husky/) pre-commit hook already runs for everyone via
+`npm install` (the root `prepare` script installs it). It scans **staged** content with gitleaks
+before each commit, so a secret is caught before it ever reaches a branch.
+
+The scan is **skipped with a warning** if gitleaks is not installed, so it never blocks
+contributors who have not set it up. To enable it locally:
 
 ```bash
-node scripts/check-dependency-audit.mjs --update
+# macOS / Linux
+brew install gitleaks
+
+# Windows (PowerShell)
+winget install Gitleaks.Gitleaks
+
+# or any platform — download the release binary and put it on your PATH
+# https://github.com/gitleaks/gitleaks/releases
 ```
 
-Commit the resulting JSON alongside your lockfile changes.
+Then verify it is wired up:
 
-### Current backlog
+```bash
+gitleaks version
+```
 
-All 64 findings are fixable today; none are unfixable or ignored. Grouped by the single upgrade
-that clears them:
+To check everything currently staged without committing:
 
-| Upgrade | Findings | Project |
-| --- | --- | --- |
-| `mjml` → 5.4.1 | 31 | `backend` |
-| in-range (`npm audit fix`) | 21 | root, `backend`, `frontend` |
-| `@jest/globals` → 29.7.0 | 6 | `backend` |
-| `nodemailer` → 10.0.10 | 1 | `backend` |
-| `vitest` → 5.0.2, `@vitest/coverage-v8` → 5.0.2, `jspdf` → 4.2.1 | 3 (**critical**) | `frontend` |
-| `vite` → 8.3.1 | 1 | `frontend` |
-| `@faker-js/faker` → 10.6.0 | 1 | `load-test` |
+```bash
+gitleaks git --staged --config .gitleaks.toml --redact
+```
 
-Per project: `backend` 45, `frontend` 16, root 2, `load-test` 1, `sdk` 0.
+**Opting out.** If gitleaks blocks a commit you know is safe, bypass it for that one commit:
 
-### Suggested triage order
+```bash
+SKIP_GITLEAKS=1 git commit -m "..."
+```
 
-1. **Critical first.** The three `frontend` criticals (`vitest`, `@vitest/coverage-v8`, `jspdf`) are
-   dev/build-time only, but bump them out of the way early.
-2. **Highest leverage first.** `mjml` alone clears 31 findings — nearly half the backlog — from one
-   dependency.
-3. **Then `npm audit fix`** for the 21 in-range findings, which needs no manifest changes.
-4. **The long tail** (`@jest/globals`, `nodemailer`, `vite`, `@faker-js/faker`) individually.
-5. **Rust.** One advisory exists for `paste` 1.0.15 (pulled in transitively by
-   `rwa-marketplace`): `RUSTSEC-2024-0436`, unmaintained, with no patched release — 1.0.15 is both
-   the newest and the only version. It is passed to `cargo audit --ignore`, mostly to keep the log
-   clean; the crate is archived and cannot be fixed from this repository. Delete the `--ignore` once
-   `rwa-marketplace` updates or is replaced.
+CI still scans the branch, so this only skips the local convenience check.
 
-Note that `cargo audit` only fails on vulnerabilities. Informational notices such as unmaintained or
-unsound are reported but do not fail the build, because this workflow does not pass
-`--deny warnings`. If the project later wants unmaintained crates to be blocking, add
-`--deny warnings` to the cargo step.
+### 3. GitHub secret scanning and push protection (repository setting)
 
-### Requesting an exception
+This layer is **mostly already active** and is *not* controlled by any file in the repository —
+so nothing in a pull request can change it, which is why it is documented rather than configured
+here.
 
-Prefer fixing the finding. If a high/critical finding genuinely cannot be fixed right now, it has to
-be recorded deliberately — the ratchet makes omission impossible:
+- **Secret scanning is already on.** GitHub runs it automatically on public repositories, and this
+  repository is public, so leaks in the existing history already raise alerts in the Security tab.
+- **Push protection is already on for your own pushes.** Account-level push protection is enabled
+  by default for pushes to any public repository on GitHub.com, so contributors are already blocked
+  from pushing a known secret here.
+- **Repository/organization-level push protection is the one to confirm.** This is the layer that
+  also files an alert when someone deliberately bypasses a block, and it is not guaranteed to be on
+  for an existing org-owned public repository. A maintainer with admin access should confirm it:
 
-- Add the advisory to `.github/dependency-audit-baseline.json` via `--update`, and state the reason
-  in a GitHub issue or PR comment in the same PR. A baseline entry with no stated justification
-  should be rejected in review.
-- Do **not** add `continue-on-error: true` to the audit job, and do not lower the npm severity
-  threshold. Both disable the gate for everyone, including future findings.
-- An exception needs a follow-up issue to remove it. If there is none, the finding is not "accepted",
-  it is deferred, and should be described that way.
+**Settings → Code security and analysis → Secret scanning → Enable**
+**Settings → Code security and analysis → Secret scanning and push protection → Enable**
 
-### Known coverage gaps
+Check the current state without changing it:
 
-The audit and Dependabot config only see projects that have a lockfile. These are currently invisible
-to both:
+```bash
+gh api repos/Trust-Analysis/Tokenized-Fractional- --jq .security_and_analysis
+```
 
-- `contracts/vault` — not a member of the `contracts` Cargo workspace and has no `Cargo.lock`.
-- `backend/gateway`, `backend/services/*` — have `package.json` files but no lockfiles.
+Enable both, for a maintainer with `admin` scope on the repo:
 
-Adding a lockfile to any of these is a prerequisite for them being covered, and should be a separate
-change so the newly visible findings can be baselined deliberately.
+```bash
+curl -X PUT -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer $GITHUB_TOKEN" \
+  https://api.github.com/repos/Trust-Analysis/Tokenized-Fractional- \
+  -d '{"security_and_analysis":{"secret_scanning":{"status":"enabled"},"secret_scanning_push_protection":{"status":"enabled"}}}'
+```
+
+Push protection blocks a push before the secret reaches the history, which is the strongest of the
+three layers — and it is the only one that fires *before* a commit lands, rather than after. Note
+that on private repositories these features require GitHub Secret Protection, which costs money;
+gitleaks in CI is free either way.
+
+### If a secret is committed
+
+Removing the line does **not** un-leak a secret, because it stays in the history. Rotate or revoke
+the credential first, then remove the file. Force-pushing a rewritten history is a last resort —
+coordinate with maintainers, because it invalidates other people's clones.
+
+### False positives
+
+`.gitleaks.toml` holds narrowly-scoped allowlists for the placeholder values this repository
+intentionally commits (doc examples such as `YOUR_API_KEY`, and the public Stellar contract ID
+documented in the analytics docs). If gitleaks flags something legitimate:
+
+- **One line** — append `// gitleaks:allow` (or `# gitleaks:allow`) to that line.
+- **A value used across files** — add the exact literal to a `[[allowlists]]` block in
+  `.gitleaks.toml`.
+
+Do not add broad path or directory allowlists. The placeholder entries in `.gitleaks.toml` are keyed
+to exact literal strings, so a real credential that merely resembles a placeholder is still
+reported.
+
+There is exactly one exception, and it is deliberate: the `private-key` rule is allowlisted for
+`backend/__tests__/cache-tls.test.js`, which carries a throwaway PEM. The trade-off is that real key
+material committed specifically inside that one file would not be reported — so do not put anything
+sensitive in it. Everywhere else in the tree, a real private key is still caught.
 
 ---
 
