@@ -30,13 +30,11 @@ import {
   TX_CONFIRMED,
   TX_FAILED,
   TX_SUBMITTED,
-  TX_FAILED_CHECK_BALANCE,
-  TX_FAILED_PAUSED,
-  TX_FAILED_NO_SHARES,
   FAILED_FETCH_SHARE_BALANCE,
   MUST_BUY_AT_LEAST_ONE_SHARE,
   CONTRACT_NOT_CONFIGURED,
 } from './constants/errors';
+import { toToastError } from './lib/errorMapper';
 import { useAssetStore } from './store/useAssetStore';
 import { useToastStore } from './store/useToastStore';
 import { useSorobanRead, useSorobanWrite } from './hooks/useSoroban';
@@ -639,10 +637,7 @@ function App() {
       pendingToastRef.current = addToast({ message: TX_SUBMITTED, type: 'pending', txHash: hash });
     } catch (err) {
       setConfirmPending(false);
-      let msg = TX_FAILED_CHECK_BALANCE;
-      if (err.message?.includes('paused')) msg = TX_FAILED_PAUSED;
-      else if (err.message?.includes('Not enough shares')) msg = TX_FAILED_NO_SHARES;
-      addToast({ message: msg, type: 'error' });
+      addToast(toToastError(err, { operation: 'buy_shares' }));
     }
   };
 

@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { signTransaction } from "@stellar/freighter-api";
 import { rpc, TransactionBuilder, Networks, Contract } from "@stellar/stellar-sdk";
 import { useWalletStore } from "../store/useWalletStore";
+import { mapError } from "../lib/errorMapper";
 
 const CONTRACT_ID = import.meta.env.VITE_CONTRACT_ID || "C...";
 const RPC_URL = import.meta.env.VITE_RPC_URL || "https://soroban-testnet.stellar.org:443";
@@ -121,8 +122,9 @@ export function useSorobanRead(fnName, args = [], options = {}) {
       return simulation.result;
     } catch (err) {
       console.error(`[useSorobanRead] Error executing ${fnName}:`, err);
-      setError(err.message || `Failed to execute ${fnName}`);
-      if (onErrorRef.current) onErrorRef.current(err);
+      const mapped = mapError(err, { operation: fnName });
+      setError(mapped);
+      if (onErrorRef.current) onErrorRef.current(err, mapped);
       throw err;
     } finally {
       setLoading(false);
@@ -201,8 +203,9 @@ export function useSorobanWrite(fnName) {
       return submitRes;
     } catch (err) {
       console.error(`[useSorobanWrite] Error executing tx ${fnName}:`, err);
-      setError(err.message || `Transaction ${fnName} failed`);
-      if (options.onError) options.onError(err);
+      const mapped = mapError(err, { operation: fnName });
+      setError(mapped);
+      if (options.onError) options.onError(err, mapped);
       throw err;
     } finally {
       setLoading(false);
