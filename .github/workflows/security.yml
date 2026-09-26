@@ -9,22 +9,11 @@ on:
     - cron: '0 0 * * 0'  # Weekly on Sunday
 
 jobs:
-  dependency-audit:
-    name: Dependency Audit
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-      - name: Run npm audit (backend)
-        run: npm audit --audit-level=high
-        working-directory: backend
-        continue-on-error: true
-      - name: Run npm audit (frontend)
-        run: npm audit --audit-level=high
-        working-directory: frontend
-        continue-on-error: true
+  # The old `dependency-audit` job that lived here ran `npm audit` with
+  # `continue-on-error: true` on every step, so it reported green no matter what
+  # it found — a check that cannot fail is worse than no check, because it reads
+  # as coverage. It never covered cargo either. Replaced by the enforcing
+  # workflow in dependency-audit.yml (issue #721).
 
   codeql:
     name: CodeQL Analysis
