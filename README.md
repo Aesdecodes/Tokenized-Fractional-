@@ -367,6 +367,7 @@ Keep ports 80 and 443 reachable so HTTP-01 renewal can complete. Check the renew
 | `get_available_shares` | Query remaining shares | None |
 | `get_total_shares` | Query total shares | None |
 | `get_price` | Query price per share | None |
+| `get_admin` | Query the address that currently administers the contract | None |
 | `is_paused` | Check if paused | None |
 | `pause` | Pause marketplace | Admin |
 | `unpause` | Unpause marketplace | Admin |

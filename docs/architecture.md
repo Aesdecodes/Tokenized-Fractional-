@@ -112,6 +112,7 @@ sequenceDiagram
 | `get_available_shares` | Any | Returns the remaining shares available for purchase. |
 | `get_total_shares` | Any | Returns the total supply of shares for the asset. |
 | `get_price` | Any | Returns the price per share. |
+| `get_admin` | Any | Returns the address that currently administers the contract. |
 | `is_paused` | Any | Returns whether the marketplace is currently paused. |
 | `pause` | Admin | Pauses the marketplace to prevent new purchases. |
 | `unpause` | Admin | Unpauses the marketplace. |

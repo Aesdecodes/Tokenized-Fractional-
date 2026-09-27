@@ -4135,6 +4135,29 @@ mod test {
         assert_eq!(c.get_shares(&te.admin), 0);
     }
 
+    // ── Issue #701: public get_admin() view ─────────────────────────────
+    //
+    // The admin is stored in instance storage and used for every auth check,
+    // so auditors and off-chain tooling need a public view of who currently
+    // controls the deployment.
+
+    #[test]
+    fn test_get_admin_returns_init_admin() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+
+        assert_eq!(c.get_admin(), te.admin);
+    }
+
+    #[test]
+    #[should_panic(expected = "Contract not initialized: admin")]
+    fn test_get_admin_before_init_panics() {
+        let te = setup();
+        let c = client(&te);
+        c.get_admin();
+    }
+
     #[test]
     #[should_panic(expected = "Buyer is not whitelisted")]
     fn test_buy_shares_requires_whitelist() {
