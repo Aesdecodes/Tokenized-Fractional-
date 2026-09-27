@@ -123,7 +123,7 @@ export function toProblemResponse(source, req, resStatusCode) {
     if (typeof source.instance === 'string') {
       // instance overrides derived occurrence reference
     }
-    status = Number(source.status) || Number(source.statusCode) || 500;
+    status = Number(source.status) || Number(source.statusCode) || fallbackStatus;
     // Legacy shapes
     if (source.error !== undefined) detail = String(source.error);
     if (source.message !== undefined && !detail) detail = String(source.message);

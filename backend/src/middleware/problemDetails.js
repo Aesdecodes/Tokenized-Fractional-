@@ -50,7 +50,9 @@ export function createProblemDetailsInterceptor() {
       res.__problemDetailsWrapped = true;
 
       res.json = (payload) => {
-        if (looksLikeErrorPayload(payload)) {
+        // Only error responses are normalized; a 2xx body such as
+        // `{ message: 'Asset metadata deleted' }` is a success, not a problem.
+        if (res.statusCode >= 400 && looksLikeErrorPayload(payload)) {
           const problem = toProblemResponse(payload, req, res.statusCode);
           res.setHeader('Content-Type', PROBLEM_CONTENT_TYPE);
           return originalJson(problem);

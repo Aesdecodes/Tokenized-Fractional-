@@ -20,7 +20,9 @@ Thank you for your interest in contributing! This document outlines the process 
 
 ## Code of Conduct
 
-Be respectful, collaborative, and constructive. Harassment, offensive comments, and unprofessional behavior are not tolerated. We aim to create a welcoming environment for contributors of all experience levels.
+This project follows the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md). By participating in issues, pull requests, reviews, and discussions you agree to uphold it.
+
+Be respectful, collaborative, and constructive. Harassment, offensive comments, and unprofessional behavior are not tolerated. We aim to create a welcoming environment for contributors of all experience levels. See [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md#reporting) for how to report unacceptable behavior.
 
 ---
 
