@@ -46,6 +46,8 @@ import { useOfflineSync } from './hooks/useOfflineSync';
 import { useWalletDiscovery } from './hooks/useWalletDiscovery';
 import OfflineIndicator from './components/OfflineIndicator/OfflineIndicator';
 import WalletSelector from './components/WalletSelector/WalletSelector';
+import NetworkMismatchBanner from './components/NetworkMismatchBanner';
+import useNetworkMismatch from './hooks/useNetworkMismatch';
 import OnboardingTour from './components/OnboardingTour';
 import { setQueryData, applySubscriptionDelta } from './services/queryCache';
 
@@ -275,6 +277,17 @@ function App() {
     setShares,
     clearWalletError,
   } = useWalletStore();
+
+  // ── Wrong-network detection (Issue #714) ────────────────────────────────────
+  // Freighter can be pointed at a different network than the one this app is
+  // configured for. Detect it, warn the user, and refuse to build a purchase
+  // transaction until they switch, instead of failing deep inside the RPC call.
+  const {
+    mismatch: networkMismatch,
+    walletNetwork: freighterNetwork,
+    expected: expectedNetworkLabel,
+    checkNow: recheckNetwork,
+  } = useNetworkMismatch({ enabled: Boolean(publicKey) });
 
   const {
     assets,
@@ -612,14 +625,31 @@ function App() {
 
   const handleBuyShares = useCallback(() => {
     if (!publicKey) return;
+    if (networkMismatch) {
+      addToast({
+        message: `Freighter is on the wrong network. Switch it to ${expectedNetworkLabel} and try again.`,
+        type: 'error',
+      });
+      recheckNetwork();
+      return;
+    }
     if (buyAmount < 1) {
       addToast({ message: MUST_BUY_AT_LEAST_ONE_SHARE, type: 'error' });
       return;
     }
     setConfirmPending(true);
-  }, [publicKey, buyAmount, addToast]);
+  }, [publicKey, buyAmount, addToast, networkMismatch, expectedNetworkLabel, recheckNetwork]);
 
   const handleConfirmBuy = async () => {
+    if (networkMismatch) {
+      setConfirmPending(false);
+      addToast({
+        message: `Transaction blocked: Freighter must be switched to ${expectedNetworkLabel} first.`,
+        type: 'error',
+      });
+      recheckNetwork();
+      return;
+    }
     setTxResult(null);
     setLastTxHash(null);
     try {
@@ -735,6 +765,14 @@ function App() {
           )}
         </div>
       </header>
+
+      {/* ── Wrong-network warning (Issue #714) ──────────────────────────────── */}
+      <NetworkMismatchBanner
+        mismatch={networkMismatch}
+        expected={expectedNetworkLabel}
+        walletNetwork={freighterNetwork}
+        onRetry={recheckNetwork}
+      />
 
       {/* ── Tab Navigation ──────────────────────────────────────────────────── */}
       <nav className={styles.tabs}>
