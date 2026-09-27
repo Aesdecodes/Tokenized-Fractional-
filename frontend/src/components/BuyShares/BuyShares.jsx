@@ -1,4 +1,4 @@
-import React, { useState, useId } from 'react';
+import React, { useState, useReducer, useId } from 'react';
 import Card from '../Card/Card';
 import Input from '../Input/Input';
 import Button from '../Button/Button';
@@ -7,6 +7,13 @@ import Skeleton from '../Skeleton/Skeleton';
 import SocialShare from '../SocialShare/SocialShare';
 import ConfirmPurchase from '../ConfirmPurchase/ConfirmPurchase';
 import { formatPrice, GAS_TIERS, calculatePurchaseFees, validateSharePurchaseInput } from '../../utils/feeCalculator';
+import {
+  BuyFlowState,
+  BuyFlowEvent,
+  buyFlowReducer,
+  createInitialBuyFlowState,
+  isBuyFlowOpen,
+} from '../../machines/buyFlowMachine';
 import styles from './BuyShares.module.css';
 
 const STROOP = 10_000_000;
@@ -14,6 +21,11 @@ export { formatPrice, GAS_TIERS };
 
 /**
  * Enhanced BuyShares Component (#278)
+ *
+ * Issue #718: all purchase business logic now comes from pure, unit-tested
+ * modules — `buyFlowReducer` drives the modal lifecycle and
+ * `calculatePurchaseFees` / `validateSharePurchaseInput` own the fee maths and
+ * input validation — so the component itself only handles presentation.
  */
 export default function BuyShares({
   shares = 0,
@@ -36,10 +48,10 @@ export default function BuyShares({
   const [localBuyAmount, setLocalBuyAmount] = useState(1);
   const [gasTier, setGasTier] = useState('standard');
   const [activeTooltip, setActiveTooltip] = useState(null);
-  const [isConfirming, setIsConfirming] = useState(false);
-  const [purchaseStatus, setPurchaseStatus] = useState(null); // 'processing' | 'success' | 'error'
-  const [txHash, setTxHash] = useState(null);
-  const [errorMessage, setErrorMessage] = useState(null);
+  const [buyFlow, dispatchBuyFlow] = useReducer(buyFlowReducer, undefined, createInitialBuyFlowState);
+
+  // The machine's single `status` string decides whether the modal is mounted.
+  const isConfirming = isBuyFlowOpen(buyFlow);
 
   const buyAmountInputId = useId();
   const paymentTokenSelectId = useId();
@@ -61,31 +73,37 @@ export default function BuyShares({
     ? Math.round(((totalShares - availableShares) / totalShares) * 100)
     : null;
 
-  // Real-time calculations
-  const baseCostStroops = pricePerShare != null ? pricePerShare * buyAmount : 0;
-  const platformFeeStroops = Math.round(baseCostStroops * 0.005); // 0.5% platform fee
-  const networkFeeStroops = GAS_TIERS[gasTier]?.feeStroops || 1000;
-  const totalCostStroops = baseCostStroops + platformFeeStroops + networkFeeStroops;
+  // Real-time calculations — reuse the pure helper covered by unit tests
+  // instead of duplicating the fee maths inline.
+  const {
+    baseCostStroops,
+    platformFeeStroops,
+    networkFeeStroops,
+    totalCostStroops,
+    estimatedTime,
+  } = calculatePurchaseFees({
+    buyAmount,
+    pricePerShareStroops: pricePerShare,
+    gasTier,
+  });
 
-  // Input Validation
-  let validationError = null;
-  if (!Number.isInteger(Number(buyAmount)) || Number(buyAmount) <= 0) {
-    validationError = 'Please enter a valid positive whole number of shares.';
-  } else if (availableShares != null && buyAmount > availableShares) {
-    validationError = `Quantity exceeds available shares (${availableShares.toLocaleString()}).`;
-  } else if (userWalletBalance != null && totalCostStroops > userWalletBalance) {
-    validationError = `Total cost (${formatPrice(totalCostStroops)} XLM) exceeds wallet balance (${formatPrice(userWalletBalance)} XLM).`;
-  }
+  // Input Validation — pure and unit-tested (src/test/SharePurchaseModal.test.js).
+  const validationError = validateSharePurchaseInput({
+    buyAmount,
+    availableShares,
+    userWalletBalanceStroops: userWalletBalance,
+    totalCostStroops,
+  });
 
   const handleOpenConfirm = () => {
     if (validationError) return;
-    setIsConfirming(true);
+    dispatchBuyFlow({ type: BuyFlowEvent.REVIEW });
   };
 
   const handleConfirmPurchase = async () => {
-    setPurchaseStatus('processing');
-    setErrorMessage(null);
+    dispatchBuyFlow({ type: BuyFlowEvent.CONFIRM });
     try {
+      let hash;
       if (onBuy) {
         const result = await onBuy({
           amount: buyAmount,
@@ -95,16 +113,17 @@ export default function BuyShares({
           networkFeeStroops,
           paymentToken,
         });
-        const hash = result?.txHash || `0x${Math.random().toString(16).substring(2, 42)}`;
-        setTxHash(hash);
+        hash = result?.txHash || `0x${Math.random().toString(16).substring(2, 42)}`;
       } else {
         await new Promise((resolve) => setTimeout(resolve, 1500));
-        setTxHash(`0x${Math.random().toString(16).substring(2, 42)}`);
+        hash = `0x${Math.random().toString(16).substring(2, 42)}`;
       }
-      setPurchaseStatus('success');
+      dispatchBuyFlow({ type: BuyFlowEvent.SUCCEEDED, payload: { txHash: hash } });
     } catch (err) {
-      setPurchaseStatus('error');
-      setErrorMessage(err.message || 'Transaction failed or rejected by network.');
+      dispatchBuyFlow({
+        type: BuyFlowEvent.FAILED,
+        payload: { error: err.message || 'Transaction failed or rejected by network.' },
+      });
     }
   };
 
@@ -203,7 +222,7 @@ export default function BuyShares({
           </div>
 
           <div className={styles.timelineHint}>
-            ⏱ Estimated Timeline: <strong>{GAS_TIERS[gasTier]?.estimatedTime}</strong> confirmation
+            ⏱ Estimated Timeline: <strong>{estimatedTime}</strong> confirmation
           </div>
         </div>
       )}
@@ -318,15 +337,11 @@ export default function BuyShares({
           networkFeeStroops={networkFeeStroops}
           totalCostStroops={totalCostStroops}
           gasTier={gasTier}
-          status={purchaseStatus}
-          txHash={txHash}
-          errorMessage={errorMessage}
+          status={buyFlow.status === BuyFlowState.CONFIRMING ? null : buyFlow.status}
+          txHash={buyFlow.txHash}
+          errorMessage={buyFlow.error}
           onConfirm={handleConfirmPurchase}
-          onCancel={() => {
-            setIsConfirming(false);
-            setPurchaseStatus(null);
-            setErrorMessage(null);
-          }}
+          onCancel={() => dispatchBuyFlow({ type: BuyFlowEvent.CANCEL })}
         />
       )}
 
