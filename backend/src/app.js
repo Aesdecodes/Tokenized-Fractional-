@@ -13,23 +13,25 @@ import { randomUUID } from 'crypto';
 import express from 'express';
 import cors from 'cors';
 import pinoHttp from 'pino-http';
-import * as Sentry from '@sentry/node';
 import swaggerUi from 'swagger-ui-express';
 import swaggerJSDoc from 'swagger-jsdoc';
 import { validateEnv } from '../env.js';
 
 import {
   CORS_ORIGINS,
-  SENTRY_DSN,
-  SENTRY_TRACES_SAMPLE_RATE,
-  SENTRY_PROFILES_SAMPLE_RATE,
   REDIS_URL,
   DEPLOYMENT_COLOR,
   SERVICE_NAME,
   BUILD_ID,
   NODE_ENV,
 } from './config.js';
-import { logger } from './services/logger.js';
+import { logger, runWithRequestContext } from '../logger.js';
+import {
+  initErrorTracking,
+  installErrorTrackingRequestScope,
+  captureException,
+  reportError,
+} from './services/errorTracking.js';
 import { apiLimiter } from './middleware/rateLimiter.js';
 import { createAdminAuth, adminAuth as legacyAdminAuth } from './middleware/auth.js';
 import {
@@ -90,17 +92,10 @@ import { metricsMiddleware, metricsHandler } from './services/metricsService.js'
 
 validateEnv();
 
-// ── Sentry init ───────────────────────────────────────────────────────────────
-if (SENTRY_DSN && process.env.NODE_ENV !== 'test') {
-  Sentry.init({
-    dsn: SENTRY_DSN,
-    environment: process.env.NODE_ENV || 'development',
-    tracesSampleRate: SENTRY_TRACES_SAMPLE_RATE,
-    profilesSampleRate: SENTRY_PROFILES_SAMPLE_RATE,
-    integrations: [Sentry.httpIntegration({ breadcrumbs: true }), Sentry.expressIntegration()],
-  });
-  logger.info({ dsnPrefix: SENTRY_DSN.slice(0, 30) }, 'Sentry initialized');
-}
+// ── Error tracking (issue #703) ───────────────────────────────────────────────
+// Opt-in via SENTRY_DSN. See docs/OBSERVABILITY.md for the alerting setup and
+// the elk/ log pipeline that complements it.
+initErrorTracking();
 
 // ── App factory ───────────────────────────────────────────────────────────────
 export const app = express();
@@ -196,16 +191,13 @@ export async function initializeApp() {
 
     return { db, apiKeyService, transactionService, federatedGraphQL };
   } catch (error) {
-    logger.error({ error: error.message }, 'Failed to initialize app');
+    reportError(error, { message: 'Failed to initialize app' });
     throw error;
   }
 }
 
-// Sentry request handlers must be first
-if (SENTRY_DSN) {
-  app.use(Sentry.Handlers.requestHandler());
-  app.use(Sentry.Handlers.tracingHandler());
-}
+// Error tracking must see every request before anything else can fail.
+installErrorTrackingRequestScope(app);
 
 // Comprehensive security headers middleware
 app.use(createSecurityHeadersMiddleware(logger));
@@ -227,11 +219,13 @@ app.use(requireSanitization);
 app.use(partialResponseMiddleware());
 
 // Request-ID middleware
+// The ID is echoed in X-Request-ID and opened as an async context so every log
+// line emitted while handling the request carries it (see logger.js).
 app.use((req, res, next) => {
   const id = req.headers['x-request-id'] || randomUUID();
   req.requestId = id;
   res.setHeader('X-Request-ID', id);
-  next();
+  runWithRequestContext({ requestId: id }, next);
 });
 
 // Issue #519: RFC 7807 problem-details interceptor — normalizes legacy error
@@ -247,6 +241,7 @@ app.use(
     logger,
     autoLogging: { ignore: (req) => req.url === '/health' },
     genReqId: (req) => req.requestId,
+    customProps: (req) => ({ requestId: req.requestId }),
   }),
 );
 
@@ -554,10 +549,21 @@ app.get('/graphql/stitching/info', (_req, res) => {
 // 404 handler (RFC 7807)
 app.use(problemDetailsNotFoundHandler());
 
-// Sentry error handler must precede custom error handler
-if (SENTRY_DSN) {
-  app.use(Sentry.Handlers.errorHandler());
-}
+// Error tracking: report server-side failures to Sentry, tagged with the
+// request ID so an alert can be traced back to the structured logs. Registered
+// before problemDetailsErrorHandler(), which owns the log line for the same
+// error. 4xx responses are client errors rather than incidents.
+app.use((err, req, _res, next) => {
+  const status = Number(err?.status) || Number(err?.statusCode) || 500;
+  if (status >= 500) {
+    captureException(err, {
+      requestId: req.requestId,
+      method: req.method,
+      path: req.originalUrl || req.url,
+    });
+  }
+  next(err);
+});
 
 // Issue #519: global RFC 7807 error exception filter/interceptor.
 app.use(problemDetailsErrorHandler());

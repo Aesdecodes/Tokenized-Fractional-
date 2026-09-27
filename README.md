@@ -100,6 +100,7 @@ graph TB
 - [Architecture Overview & Diagrams](docs/architecture.md)
 - [Architecture Decision Records (ADRs)](docs/adr/README.md) — Technical decisions and rationale
 - [Security Best Practices Guide](docs/security.md) — Security guidelines, audit checklist, and incident response
+- [Observability Guide](docs/OBSERVABILITY.md) — Structured logging, request IDs, secret redaction, Sentry alerting, and the ELK log pipeline
 - [Performance Benchmarks](docs/performance.md) — Gas costs, API latency, frontend metrics
 - [CDN Configuration](docs/cdn.md) — Serve frontend assets and uploaded media through Cloudflare
 - [Troubleshooting Guide](docs/troubleshooting.md) — Common issues and solutions

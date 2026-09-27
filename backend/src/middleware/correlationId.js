@@ -11,6 +11,7 @@
 import { randomUUID } from 'crypto';
 import pinoHttp from 'pino-http';
 import { createLoggerWithCorrelation } from '../services/logger.js';
+import { runWithRequestContext, getRequestContext } from '../../logger.js';
 
 /**
  * Generate or retrieve correlation ID from request
@@ -46,7 +47,10 @@ export function correlationIdMiddleware(req, res, next) {
   // Create child logger with correlation ID
   req.log = createLoggerWithCorrelation(correlationId);
 
-  next();
+  // Open the shared request context so that every log line emitted while
+  // handling the request — handlers, services, background promises — carries
+  // the correlation ID without having to thread `req.log` through.
+  runWithRequestContext({ correlationId }, next);
 }
 
 /**
@@ -91,26 +95,21 @@ export function attachWebSocketCorrelationId(ws, req) {
 }
 
 /**
- * AsyncLocalStorage wrapper for correlation ID propagation
- * in async contexts (database queries, external RPC calls)
- */
-import { AsyncLocalStorage } from 'async_hooks';
-
-export const correlationIdContext = new AsyncLocalStorage();
-
-/**
- * Run a function with correlation ID context
+ * Run a function with correlation ID context.
+ *
+ * Backed by the canonical request context in `logger.js` (issue #703) so that
+ * request IDs and correlation IDs share a single async context instead of
+ * competing AsyncLocalStorage instances.
  */
 export function withCorrelationId(correlationId, fn) {
-  return correlationIdContext.run({ correlationId }, fn);
+  return runWithRequestContext({ correlationId }, fn);
 }
 
 /**
  * Get current correlation ID from context
  */
 export function getCurrentCorrelationId() {
-  const store = correlationIdContext.getStore();
-  return store?.correlationId || null;
+  return getRequestContext().correlationId || null;
 }
 
 /**

@@ -2,112 +2,49 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * src/services/logger.js — Structured JSON logging with correlation IDs.
+ * src/services/logger.js — re-export of the canonical backend logger.
  *
- * Enhanced Pino logger with:
- * - Correlation ID tracking across requests
- * - Sensitive data redaction (passwords, tokens, private keys)
- * - JSON formatting for log aggregators (Datadog/ELK)
+ * The logging contract (levels, request IDs, redaction) lives in
+ * `backend/logger.js` so that the entry point, the services under `src/` and
+ * the background workers all emit the exact same JSON shape — see
+ * `docs/OBSERVABILITY.md`. This module is kept as the import path used
+ * throughout `src/` so existing `import { logger } from './logger.js'`
+ * statements keep working.
+ *
+ * Redaction is applied centrally, so callers no longer need to remember to
+ * route values through a "redacting" helper: anything shaped like a
+ * credential (`password`, `secret`, `token`, `apiKey`, `authorization`,
+ * `cookie`, …) is replaced with `[REDACTED]` before serialisation, and the
+ * literal value of ADMIN_API_KEY is masked on the way out.
  */
 
-import pino from 'pino';
-import os from 'os';
-import { LOG_LEVEL, NODE_ENV } from '../config.js';
-
-const isDev = NODE_ENV === 'development';
-
-// Sensitive field patterns to redact
-const SENSITIVE_PATTERNS = [
-  /password/i,
-  /secret/i,
-  /token/i,
-  /private[_\s]?key/i,
-  /api[_\s]?key/i,
-  /authorization/i,
-  /bearer/i,
-  /credit[_\s]?card/i,
-  /ssn/i,
-  /pin/i,
-];
-
-// Redact sensitive values in log objects
-function redactSensitiveData(obj) {
-  if (!obj || typeof obj !== 'object') return obj;
-
-  const redacted = Array.isArray(obj) ? [...obj] : { ...obj };
-
-  for (const key in redacted) {
-    if (SENSITIVE_PATTERNS.some(pattern => pattern.test(key))) {
-      redacted[key] = '[REDACTED]';
-    } else if (typeof redacted[key] === 'object' && redacted[key] !== null) {
-      redacted[key] = redactSensitiveData(redacted[key]);
-    }
-  }
-
-  return redacted;
-}
-
-// Pino redact configuration
-const redactConfig = [
-  'req.headers.authorization',
-  'req.headers["x-api-key"]',
-  'req.body.password',
-  'req.body.secret',
-  'req.body.token',
-  'req.body.privateKey',
-  'req.body.apiKey',
-  'res.headers["set-cookie"]',
-  'error.config.headers.Authorization',
-  'error.config.headers["x-api-key"]',
-];
-
-export const logger = pino({
-  level: LOG_LEVEL,
-  formatters: {
-    level: (label) => {
-      return { level: label };
-    },
-  },
-  serializers: {
-    req: pino.stdSerializers.req,
-    res: pino.stdSerializers.res,
-    err: pino.stdSerializers.err,
-  },
-  redact: redactConfig,
-  timestamp: pino.stdTimeFunctions.isoTime,
-  ...(isDev && {
-    transport: {
-      target: 'pino-pretty',
-      options: { 
-        colorize: true, 
-        ignore: 'pid,hostname',
-        messageFormat: (log) => {
-          const correlationId = log.correlationId ? `[${log.correlationId}] ` : '';
-          return `${correlationId}${log.msg}`;
-        },
-      },
-    },
-  }),
-  base: {
-    pid: process.pid,
-    hostname: os.hostname(),
-    environment: NODE_ENV,
-  },
-});
+import {
+  logger,
+  scrubValue,
+  runWithRequestContext,
+  getRequestId,
+  createRequestLogger,
+  REDACTED,
+} from '../../logger.js';
 
 /**
- * Create a child logger with correlation ID
+ * Create a child logger bound to a correlation ID.
+ * Correlation IDs propagate across service boundaries, whereas request IDs
+ * identify a single inbound HTTP request.
  */
 export function createLoggerWithCorrelation(correlationId) {
   return logger.child({ correlationId });
 }
 
 /**
- * Log with automatic sensitive data redaction
+ * Log with automatic sensitive-data redaction.
+ * Retained for call-site compatibility: redaction is now unconditional.
  */
 export function logWithRedaction(level, message, data = {}) {
-  const redactedData = redactSensitiveData(data);
-  logger[level]({ ...redactedData }, message);
+  const logMethod = typeof logger[level] === 'function' ? logger[level] : logger.info;
+  logMethod(scrubValue(data), message);
 }
+
+export { logger, scrubValue, runWithRequestContext, getRequestId, createRequestLogger, REDACTED };
 
 export default logger;
