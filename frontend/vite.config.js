@@ -190,6 +190,11 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: './src/test/setup.js',
+    // Only collect unit suites under src/. Without this explicit glob Vitest
+    // would also match the Playwright specs in `e2e/*.spec.js`; those are run
+    // by the Playwright runner, not Vitest, and would fail `npm test`.
+    // (Issue #718)
+    include: ['src/**/*.{test,spec}.{js,jsx}'],
     // ── Coverage Configuration (Issue #370) ──────────────────────────────────
     coverage: {
       provider: 'v8',
