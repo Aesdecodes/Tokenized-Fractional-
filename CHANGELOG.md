@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`get_admin()` in the documented contract API** - the view function that returns the stored admin address already existed on-chain, but it was absent from the Smart Contract API tables in `README.md` and `docs/architecture.md`, so auditors, the backend, and block explorers had no documented way to verify which address administers a deployment. Both tables now list it, and its behaviour (returns the admin passed to `init`, panics before initialization) is covered by unit tests (#701)
+
 ### Fixed
 
 - **Render Node.js runtime pin** - `render.yaml` now sets `NODE_VERSION` to 20.18.0 on all four services, and the `engines.node` ranges in `backend/package.json` / `frontend/package.json` are upper-bounded (`>=20.18.0 <21.0.0`) so the build and runtime environment can no longer drift when Render changes its default Node version (#723)

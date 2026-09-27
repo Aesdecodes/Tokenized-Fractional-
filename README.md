@@ -298,6 +298,7 @@ This will start an Nginx server on `http://localhost:80` that proxies requests:
 | `get_available_shares` | Query remaining shares | None |
 | `get_total_shares` | Query total shares | None |
 | `get_price` | Query price per share | None |
+| `get_admin` | Query the address that currently administers the contract | None |
 | `is_paused` | Check if paused | None |
 | `pause` | Pause marketplace | Admin |
 | `unpause` | Unpause marketplace | Admin |
