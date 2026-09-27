@@ -421,6 +421,7 @@ pub struct EventBuyShares {
     pub buyer: Address,
     pub shares: u32,
     pub total_cost: i128,
+    pub price: i128,
 }
 
 /// Emitted when an admin enables or disables the buyer allowlist gate on
@@ -431,11 +432,15 @@ pub struct EventAllowlistSet {
     pub enabled: bool,
 }
 
-#[contractevent]
-pub struct EventPause {}
+#[contractevent(data_format = "vec")]
+pub struct EventPause {
+    pub admin: Address,
+}
 
-#[contractevent]
-pub struct EventUnpause {}
+#[contractevent(data_format = "vec")]
+pub struct EventUnpause {
+    pub admin: Address,
+}
 
 /// Emitted when an asset is permanently delisted by the multi-sig admin role
 /// (Issue #570). Carries the number of open sell orders that were cancelled
@@ -449,8 +454,9 @@ pub struct EventAssetDelisted {
 
 #[contractevent(data_format = "vec")]
 pub struct EventEmergencyWithdraw {
-    to: Address,
-    amount: i128,
+    pub admin: Address,
+    pub to: Address,
+    pub amount: i128,
 }
 
 #[contractevent(data_format = "vec")]
@@ -1087,7 +1093,7 @@ impl RwaMarketplace {
         // Clear reentrancy guard before publishing event
         _set_non_reentrant(&env, false);
 
-        EventBuyShares { caller: buyer.clone(), buyer, shares, total_cost }.publish(&env);
+        EventBuyShares { caller: buyer.clone(), buyer, shares, total_cost, price }.publish(&env);
     }
 
     /// Set (or update) the share-certificate NFT contract address. Admin only.
@@ -1660,7 +1666,7 @@ impl RwaMarketplace {
         _update_purchase_history(&env, &buyer, purchase_history);
 
         _set_non_reentrant(&env, false);
-        EventBuyShares { buyer, shares, total_cost }.publish(&env);
+        EventBuyShares { caller: buyer.clone(), buyer, shares, total_cost, price }.publish(&env);
     }
 
     pub fn claim_vested_shares(env: Env, claimer: Address) {
@@ -2009,7 +2015,7 @@ impl RwaMarketplace {
             .expect("Contract not initialized: admin");
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &true);
-        EventPause {}.publish(&env);
+        EventPause { admin }.publish(&env);
     }
 
     pub fn unpause(env: Env) {
@@ -2017,7 +2023,7 @@ impl RwaMarketplace {
             .expect("Contract not initialized: admin");
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &false);
-        EventUnpause {}.publish(&env);
+        EventUnpause { admin }.publish(&env);
     }
 
     // ── Issue #570: Emergency Asset Delisting ─────────────────────────────
@@ -2103,7 +2109,7 @@ impl RwaMarketplace {
         client.transfer(&env.current_contract_address(), &to, &amount);
 
         _set_non_reentrant(&env, false);
-        EventEmergencyWithdraw { to, amount }.publish(&env);
+        EventEmergencyWithdraw { admin, to, amount }.publish(&env);
     }
 
     // ── Issue #309: Upgradeable Proxy Pattern ──────────────────────────────

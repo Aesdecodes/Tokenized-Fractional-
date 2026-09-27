@@ -19,9 +19,9 @@ The contract ID is always the marketplace contract itself.
 | Event | Triggered By | Fields |
 |---|---|---|
 | `EventInit` | `init()` | `admin: Address`, `payment_token: Address`, `price: i128`, `total_shares: u32` |
-| `EventPause` | `pause()` | *(no fields)* |
-| `EventUnpause` | `unpause()` | *(no fields)* |
-| `EventEmergencyWithdraw` | `emergency_withdraw()` | `to: Address`, `amount: i128` |
+| `EventPause` | `pause()` | `admin: Address` |
+| `EventUnpause` | `unpause()` | `admin: Address` |
+| `EventEmergencyWithdraw` | `emergency_withdraw()` | `admin: Address`, `to: Address`, `amount: i128` |
 | `EventContractUpgraded` | `upgrade()` | `new_wasm_hash: BytesN<32>` |
 
 ### Price & Supply
@@ -38,7 +38,7 @@ The contract ID is always the marketplace contract itself.
 
 | Event | Triggered By | Fields |
 |---|---|---|
-| `EventBuyShares` | `buy_shares()`, `buy_vested_shares()` | `buyer: Address`, `shares: u32`, `total_cost: i128` |
+| `EventBuyShares` | `buy_shares()`, `buy_vested_shares()` | `caller: Address`, `buyer: Address`, `shares: u32`, `total_cost: i128`, `price: i128` |
 | `EventClaimVestedShares` | `claim_vested_shares()` | `claimer: Address`, `amount: u32` |
 
 ### Dividends
