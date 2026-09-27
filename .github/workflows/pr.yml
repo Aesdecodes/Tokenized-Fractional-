@@ -29,8 +29,6 @@ jobs:
     name: Soroban Fuzz Tests (proptest)
     runs-on: ubuntu-latest
     # Issue #668: scope contract checks to pull requests touching contracts/
-    paths:
-      - 'contracts/**'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -85,8 +83,6 @@ jobs:
   contract-wasm-build:
     name: Contracts WebAssembly Build
     runs-on: ubuntu-latest
-    paths:
-      - 'contracts/**'
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
