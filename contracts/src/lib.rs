@@ -42,6 +42,8 @@ pub struct RwaMarketplace;
 #[contracttype]
 pub enum DataKey {
     Admin,
+    /// Pending admin for two-step transfer (Issue #638).
+    PendingAdmin,
     PaymentToken,
     PricePerShare,
     TotalShares,
@@ -506,6 +508,13 @@ pub struct EventDividendHistoryRecorded {
 pub struct EventSetPrice {
     old_price: i128,
     new_price: i128,
+}
+
+/// Emitted when an admin initiates a two-step transfer (Issue #638).
+#[contractevent(data_format = "vec")]
+pub struct EventAdminTransferInitiated {
+    pub current_admin: Address,
+    pub pending_admin: Address,
 }
 
 #[contractevent(data_format = "vec")]
@@ -4304,6 +4313,54 @@ mod test {
         c.get_admin();
     }
 
+    // ── Issue #638: Two-step admin transfer tests ───────────────────────
+
+    #[test]
+    fn test_transfer_admin_sets_pending() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+        let new_admin = Address::generate(&te.env);
+        c.transfer_admin(&new_admin);
+        assert_eq!(c.get_pending_admin(), Some(new_admin));
+        // Old admin still in effect
+        assert_eq!(c.get_admin(), te.admin);
+    }
+
+    #[test]
+    fn test_accept_admin_completes_transfer() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+        let new_admin = Address::generate(&te.env);
+        c.transfer_admin(&new_admin);
+        c.accept_admin();
+        assert_eq!(c.get_admin(), new_admin);
+        assert_eq!(c.get_pending_admin(), None);
+    }
+
+    #[test]
+    #[should_panic(expected = "No pending admin transfer")]
+    fn test_accept_admin_without_transfer_panics() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.accept_admin();
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_old_admin_loses_privileges_after_transfer() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+        let new_admin = Address::generate(&te.env);
+        c.transfer_admin(&new_admin);
+        c.accept_admin();
+        // Old admin should no longer be able to pause
+        c.pause();
+    }
+
     #[test]
     #[should_panic(expected = "Buyer is not whitelisted")]
     fn test_buy_shares_requires_whitelist() {
@@ -7621,6 +7678,37 @@ impl RwaMarketplace {
             .instance()
             .get(&DataKey::Admin)
             .expect("Contract not initialized: admin")
+    }
+
+    // ── Issue #638: Two-step admin transfer ──────────────────────────────
+
+    /// Initiate admin transfer by proposing `new_admin`.
+    /// Only the current admin can call this. The transfer is not complete
+    /// until `new_admin` calls `accept_admin()`.
+    pub fn transfer_admin(env: Env, new_admin: Address) {
+        let admin: Address = env.storage().instance()
+            .get(&DataKey::Admin)
+            .expect("Contract not initialized: admin");
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::PendingAdmin, &new_admin);
+        EventAdminTransferInitiated { current_admin: admin, pending_admin: new_admin }.publish(&env);
+    }
+
+    /// Complete the admin transfer. Only the pending admin can call this.
+    /// After acceptance, the old admin loses all admin privileges and the
+    /// pending admin becomes the new admin.
+    pub fn accept_admin(env: Env) {
+        let pending: Address = env.storage().instance()
+            .get::<DataKey, Address>(&DataKey::PendingAdmin)
+            .expect("No pending admin transfer");
+        pending.require_auth();
+        env.storage().instance().set(&DataKey::Admin, &pending);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+    }
+
+    /// Return the pending admin address, if any.
+    pub fn get_pending_admin(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::PendingAdmin)
     }
 
     /// Return whether the contract has been initialized.

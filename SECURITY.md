@@ -48,6 +48,26 @@ The Soroban smart contract manages financial transactions on the Stellar network
 - Bypassing the pause mechanism.
 - Token drain or fund misappropriation.
 
+### Admin Key Management (Issue #638)
+
+The contract uses a **two-step admin transfer** to prevent accidental or malicious admin key rotation:
+
+1. **`transfer_admin(new_admin)`** — The current admin proposes a new admin address. The proposal is stored as a pending transfer; the current admin retains full privileges until the transfer is completed.
+2. **`accept_admin()`** — The pending admin calls this to complete the transfer. Only the pending admin can call this function. After acceptance:
+   - The old admin loses **all** admin privileges immediately.
+   - The pending admin becomes the new admin.
+   - The pending admin slot is cleared.
+
+**Why two steps?** A single-step `set_admin(new_admin)` would instantly lock out the current admin. If `new_admin` is a mistyped or compromised address, recovery is impossible. The two-step pattern ensures the new admin explicitly accepts the role before gaining any control.
+
+**Key management best practices:**
+
+- Use a **multi-sig** account as the admin address. Stellar supports native multi-sig, and the contract will respect whatever signing policy the admin account enforces.
+- Before calling `transfer_admin`, verify the new admin address is correct and controlled by the intended party.
+- After `accept_admin`, the old admin key should be considered revoked and should no longer be used for any contract operations.
+- Monitor `EventAdminTransferInitiated` events for unexpected admin transfer proposals.
+- If a transfer is initiated by mistake, the pending admin can simply never call `accept_admin()`, and the transfer expires (pending admin can be overwritten by a new `transfer_admin` call from the current admin).
+
 ## Runbook: Correcting a Deployment Mistake
 
 `init` writes `PricePerShare` and `TotalShares` exactly once. If either value was mis-keyed at
