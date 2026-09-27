@@ -41,7 +41,7 @@ function run(command, args, options = {}) {
   if (result.status !== 0) {
     throw new Error(result.stderr || `${command} exited with status ${result.status}`);
   }
-  return result.stdout.trim();
+  return result.stdout?.trim() ?? '';
 }
 
 try {
@@ -81,8 +81,12 @@ try {
   const statuses = await Promise.all(Array.from({ length: 60 }, () => requestStatus()));
   const limited = statuses.filter((status) => status === 429).length;
   const proxied = statuses.filter((status) => status === 200).length;
+  const statusCounts = statuses.reduce((counts, status) => {
+    counts[status] = (counts[status] ?? 0) + 1;
+    return counts;
+  }, {});
 
-  assert.ok(limited > 0, `Expected at least one HTTP 429, received ${limited}`);
+  assert.ok(limited > 0, `Expected at least one HTTP 429; observed ${JSON.stringify(statusCounts)}`);
   assert.ok(proxied > 0, `Expected proxied HTTP 200 responses, received ${proxied}`);
   console.log(`Nginx rate-limit check passed: ${proxied} proxied responses, ${limited} HTTP 429 responses.`);
 } finally {
