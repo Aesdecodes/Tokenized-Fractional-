@@ -503,6 +503,27 @@ pub struct EventSetTotalShares {
     new_total: u32,
 }
 
+/// Issue #702 - emitted when the admin corrects the price that was mis-keyed at
+/// deployment. `set_price` emits `EventSetPrice`; this event is reserved for the
+/// pause-gated `update_price` correction path so indexers can tell a routine
+/// re-pricing apart from a deployment-correction without inspecting transactions.
+#[contractevent(data_format = "vec")]
+pub struct EventUpdatePrice {
+    old_price: i128,
+    new_price: i128,
+}
+
+/// Issue #702 - emitted when the admin adds supply for a follow-on offering of
+/// the same underlying asset via the pause-gated `increase_total_shares`.
+/// `additional` is repeated alongside the resulting totals so an indexer never
+/// has to derive the delta.
+#[contractevent(data_format = "vec")]
+pub struct EventIncreaseTotalShares {
+    old_total: u32,
+    additional: u32,
+    new_total: u32,
+}
+
 #[contractevent(data_format = "vec")]
 pub struct EventSetMaxSharesPerUser {
     old_max: u32,
@@ -2523,6 +2544,131 @@ impl RwaMarketplace {
 
         EventSetTotalShares {
             old_total: total_shares,
+            new_total,
+        }
+        .publish(&env);
+    }
+
+    /// Issue #702 - correct a price that was mis-keyed in `init`.
+    ///
+    /// `init` writes `PricePerShare` exactly once, so a typo in the deploy
+    /// arguments (a misplaced decimal, the wrong token's scale) used to be
+    /// fixable only by redeploying the contract and migrating holders. This is
+    /// the admin-only entry point for that correction.
+    ///
+    /// Safety properties, in order of application:
+    /// - **Admin only.** The caller must be the address stored in `init`.
+    /// - **Paused only.** The marketplace must already be paused, so no buy can
+    ///   settle at the stale price while the correction is in flight. Callers
+    ///   must `pause()` first and `unpause()` after.
+    /// - **Strictly positive.** A zero or negative price is rejected, matching
+    ///   the `init` invariant: at zero, any buyer could take the whole pool for
+    ///   free.
+    ///
+    /// The correction applies to the static fallback price only. If an oracle is
+    /// configured (see `set_oracle`), `buy_shares` reads the oracle first and
+    /// this value is only consulted when the oracle call fails, so clear the
+    /// oracle first if the oracle itself is what must be corrected.
+    ///
+    /// Emits `EventUpdatePrice` with the old and new price so indexers and
+    /// auditors can reconstruct the correction without replaying transactions.
+    pub fn update_price(env: Env, new_price: i128) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin)
+            .expect("Contract not initialized: admin");
+        admin.require_auth();
+
+        // Missing flag is treated as "not paused", so the correction is refused
+        // until the admin has explicitly paused the marketplace.
+        let paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
+        if !paused {
+            panic!("Marketplace must be paused before updating the price");
+        }
+
+        if new_price <= 0 {
+            panic!("Price must be positive");
+        }
+
+        let old_price: i128 = env.storage().instance().get(&DataKey::PricePerShare)
+            .expect("Contract not initialized: price");
+        env.storage()
+            .instance()
+            .set(&DataKey::PricePerShare, &new_price);
+
+        EventUpdatePrice {
+            old_price,
+            new_price,
+        }
+        .publish(&env);
+    }
+
+    /// Issue #702 - add supply for a follow-on offering of the same underlying asset.
+    ///
+    /// `init` fixes `TotalShares` once. When the issuer brings a second tranche
+    /// of the same underlying asset to market, this raises both `TotalShares` and
+    /// the `AvailableShares` pool by `additional`. Existing holders keep their
+    /// exact share balances; their percentage of the enlarged supply necessarily
+    /// shrinks, as with any new issuance.
+    ///
+    /// This is deliberately **additive only**: unlike `set_total_shares`, it can
+    /// never shrink supply below the number of shares already issued, so the
+    /// "new total >= issued shares" invariant holds by construction rather than by
+    /// a runtime check. The new shares are only *offered* here - buyers still go
+    /// through `buy_shares`, which enforces the whitelist, the purchase limits
+    /// and payment, so no holder's balance changes unless they choose to buy.
+    ///
+    /// Safety properties, in order of application:
+    /// - **Admin only.** The caller must be the address stored in `init`.
+    /// - **Paused only.** The marketplace must already be paused so the new supply
+    ///   cannot be bought mid-correction. Callers must `pause()` first.
+    /// - **Non-zero increment.** `additional == 0` is a no-op and is rejected.
+    /// - **Not delisted.** `delist_asset` is permanent, so a retired asset's
+    ///   supply must not grow again.
+    ///
+    /// Emits `EventIncreaseTotalShares` with the old total, the increment and the
+    /// resulting total.
+    pub fn increase_total_shares(env: Env, additional: u32) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin)
+            .expect("Contract not initialized: admin");
+        admin.require_auth();
+
+        // Missing flag is treated as "not paused", so the correction is refused
+        // until the admin has explicitly paused the marketplace.
+        let paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
+        if !paused {
+            panic!("Marketplace must be paused before increasing total shares");
+        }
+
+        if additional == 0 {
+            panic!("Additional shares must be greater than zero");
+        }
+
+        if env.storage().instance().get(&DataKey::Delisted).unwrap_or(false) {
+            panic!("Cannot increase total shares: asset is delisted");
+        }
+
+        let total_shares: u32 = env.storage().instance().get(&DataKey::TotalShares)
+            .expect("Contract not initialized: total shares");
+        let available_shares: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::AvailableShares)
+            .expect("Contract not initialized: available shares");
+
+        // Overflow-checked: a total above u32::MAX is rejected rather than
+        // silently wrapping into a smaller supply.
+        let new_total = checked_add_u32(total_shares, additional);
+        let new_available = checked_add_u32(available_shares, additional);
+
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalShares, &new_total);
+        env.storage()
+            .instance()
+            .set(&DataKey::AvailableShares, &new_available);
+
+        EventIncreaseTotalShares {
+            old_total: total_shares,
+            additional,
             new_total,
         }
         .publish(&env);
@@ -4608,6 +4754,211 @@ mod test {
         c.set_total_shares(&500);
     }
 
+    // ── Issue #702: correcting price / supply after deployment ─────────
+    //
+    // `init` writes `PricePerShare` and `TotalShares` exactly once, so a
+    // mistake made at deployment time used to be permanent short of a full
+    // redeploy. `update_price` and `increase_total_shares` are the admin-gated,
+    // pause-gated correction paths for that scenario.
+
+    /// Deploy with a mis-keyed price, correct it, and the correction is what
+    /// subsequent buyers actually pay.
+    #[test]
+    fn test_update_price_while_paused() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+        assert_eq!(c.get_price(), 100);
+
+        c.pause();
+        c.update_price(&250);
+        assert_eq!(c.get_price(), 250);
+
+        c.unpause();
+        mint(&te, &te.buyer, 100_000);
+        c.add_to_whitelist(&te.buyer);
+        c.buy_shares(&te.buyer, &10, &te.token_id);
+
+        let token_client = token::TokenClient::new(&te.env, &te.token_id);
+        assert_eq!(token_client.balance(&te.buyer), 100_000 - 10 * 250);
+    }
+
+    #[test]
+    #[should_panic(expected = "Marketplace must be paused before updating the price")]
+    fn test_update_price_requires_paused_marketplace() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+
+        // No pause() call: the live marketplace must never be re-priced.
+        c.update_price(&250);
+    }
+
+    #[test]
+    #[should_panic(expected = "Marketplace must be paused before updating the price")]
+    fn test_update_price_rejected_again_after_unpause() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+
+        c.pause();
+        c.update_price(&250);
+        c.unpause();
+        assert!(!c.is_paused());
+
+        // The pause gate is re-armed once trading resumes: a second correction
+        // is refused while buyers can still settle at the current price.
+        c.update_price(&300);
+    }
+
+    #[test]
+    #[should_panic(expected = "Price must be positive")]
+    fn test_update_price_rejects_zero() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.pause();
+        c.update_price(&0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Price must be positive")]
+    fn test_update_price_rejects_negative() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.pause();
+        c.update_price(&-250);
+    }
+
+    /// A caller with no admin signature is rejected by the host auth layer, and
+    /// the stored price is left untouched.
+    #[test]
+    fn test_update_price_rejects_unauthorized_caller() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.pause();
+
+        // Replace "allow every signature" with "allow none".
+        te.env.mock_auths(&[]);
+
+        // try_ surfaces the host-level auth failure as Err instead of panicking,
+        // so the test can also assert that nothing was written.
+        assert!(c.try_update_price(&250).is_err());
+        assert_eq!(c.get_price(), 100);
+    }
+
+    /// Follow-on offering: the new tranche raises both the supply cap and the
+    /// purchasable pool, and existing holders keep their exact share balances.
+    #[test]
+    fn test_increase_total_shares_while_paused() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+        mint(&te, &te.buyer, 100_000);
+        c.add_to_whitelist(&te.buyer);
+
+        // First tranche: 100 of 1000 shares sold.
+        c.buy_shares(&te.buyer, &100, &te.token_id);
+        assert_eq!(c.get_total_shares(), 1000);
+        assert_eq!(c.get_available_shares(), 900);
+
+        // Second tranche of the same underlying asset, added while paused.
+        c.pause();
+        c.increase_total_shares(&500);
+        assert_eq!(c.get_total_shares(), 1500);
+        assert_eq!(c.get_available_shares(), 1400);
+
+        // The existing holder keeps every share; only their percentage of the
+        // enlarged supply changes.
+        assert_eq!(c.get_shares(&te.buyer), 100);
+
+        c.unpause();
+        // The new supply is actually purchasable after the correction.
+        c.buy_shares(&te.buyer, &50, &te.token_id);
+        assert_eq!(c.get_available_shares(), 1350);
+    }
+
+    #[test]
+    #[should_panic(expected = "Marketplace must be paused before increasing total shares")]
+    fn test_increase_total_shares_requires_paused_marketplace() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+
+        c.increase_total_shares(&500);
+    }
+
+    #[test]
+    #[should_panic(expected = "Additional shares must be greater than zero")]
+    fn test_increase_total_shares_rejects_zero() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.pause();
+        c.increase_total_shares(&0);
+    }
+
+    #[test]
+    fn test_increase_total_shares_rejects_unauthorized_caller() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.pause();
+
+        te.env.mock_auths(&[]);
+
+        assert!(c.try_increase_total_shares(&500).is_err());
+        assert_eq!(c.get_total_shares(), 1000);
+        assert_eq!(c.get_available_shares(), 1000);
+    }
+
+    /// Additive-only: the new total can never dip below the shares already issued.
+    #[test]
+    fn test_increase_total_shares_preserves_issued_shares() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+        mint(&te, &te.buyer, 100_000);
+        c.add_to_whitelist(&te.buyer);
+        c.buy_shares(&te.buyer, &1000, &te.token_id);
+
+        // Nothing is available left, but supply can still grow.
+        assert_eq!(c.get_available_shares(), 0);
+        c.pause();
+        c.increase_total_shares(&250);
+        assert_eq!(c.get_total_shares(), 1250);
+        assert_eq!(c.get_available_shares(), 250);
+    }
+
+    #[test]
+    #[should_panic(expected = "Arithmetic overflow")]
+    fn test_increase_total_shares_rejects_overflow() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &u32::MAX);
+        c.pause();
+        // Would wrap to 0 without the checked add.
+        c.increase_total_shares(&1);
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot increase total shares: asset is delisted")]
+    fn test_increase_total_shares_rejected_after_delisting() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+
+        let reason = soroban_sdk::Bytes::from_slice(&te.env, b"delisting");
+        c.delist_asset(&reason);
+        assert!(c.is_delisted());
+        assert!(c.is_paused()); // delisting pauses, so the pause gate passes...
+
+        // ...and the permanent-retirement guard is what rejects the increase.
+        c.increase_total_shares(&500);
+    }
+
     // ── Pre-init tests: every function should give a clear error before init ─
 
     fn pre_init_client() -> (Env, RwaMarketplaceClient<'static>, Address, Address) {
@@ -4656,6 +5007,20 @@ mod test {
     fn test_pre_init_set_total_shares() {
         let (_, client, _, _) = pre_init_client();
         client.set_total_shares(&1000);
+    }
+
+    #[test]
+    #[should_panic(expected = "Contract not initialized: admin")]
+    fn test_pre_init_update_price() {
+        let (_, client, _, _) = pre_init_client();
+        client.update_price(&250);
+    }
+
+    #[test]
+    #[should_panic(expected = "Contract not initialized: admin")]
+    fn test_pre_init_increase_total_shares() {
+        let (_, client, _, _) = pre_init_client();
+        client.increase_total_shares(&500);
     }
 
     #[test]

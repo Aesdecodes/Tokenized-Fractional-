@@ -116,6 +116,8 @@ sequenceDiagram
 | `is_paused` | Any | Returns whether the marketplace is currently paused. |
 | `pause` | Admin | Pauses the marketplace to prevent new purchases. |
 | `unpause` | Admin | Unpauses the marketplace. |
+| `update_price` | Admin | Corrects the price per share. Only callable while paused, rejects non-positive prices. |
+| `increase_total_shares` | Admin | Adds supply for a follow-on offering of the same underlying asset. Only callable while paused, additive only, rejected on a delisted asset. |
 | `emergency_withdraw` | Admin | Withdraws the accumulated payment tokens from the contract to the admin. |
 | `get_contract_metadata` | Any | Returns the SIP-4 compliant contract metadata (name, version, description). |
 
