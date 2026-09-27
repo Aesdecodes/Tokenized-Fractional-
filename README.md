@@ -66,7 +66,7 @@ graph TB
 | 4 | Frontend sends the transaction XDR to Freighter Wallet for signing |
 | 5 | User approves in Freighter; signed XDR is returned |
 | 6 | Frontend submits the signed transaction to the Soroban RPC endpoint |
-| 7 | Soroban Smart Contract executes `buy_shares`: validates availability, transfers payment tokens from buyer to admin |
+| 7 | Soroban Smart Contract executes `buy_shares`: rejects the buyer if the allowlist is enabled and they are not on it, then validates availability and transfers payment tokens from buyer to admin |
 | 8 | The Stellar Asset Contract (payment token) transfers the cost to the admin address |
 | 9 | Contract updates the buyer's share balance and available shares count |
 | 10 | Frontend refreshes the share balance via `get_shares` (simulate-only, no fee) |
@@ -233,6 +233,18 @@ soroban contract invoke \
   --total_shares 100
 ```
 
+The allowlist is **enabled by default**, so immediately after `init` nobody can buy —
+every `buy_shares` call fails with `Address is not whitelisted` until you allowlist a
+buyer. Allowlist one, or turn the gate off for non-regulated assets:
+
+```bash
+soroban contract invoke --id <YOUR_CONTRACT_ID> --source admin --network testnet -- \
+  add_to_allowlist --addr $(soroban keys address buyer)
+```
+
+See [Compliance and Regulatory Limitations](#compliance-and-regulatory-limitations) for
+what this gate does and does not cover.
+
 ### 5. Configure Environment
 
 **Frontend** — copy and fill in `frontend/.env.example` as `frontend/.env`:
@@ -292,7 +304,14 @@ This will start an Nginx server on `http://localhost:80` that proxies requests:
 | Function | Description | Auth |
 |---|---|---|
 | `init` | Initialize marketplace | Admin |
-| `buy_shares` | Purchase fractional shares (mints NFT certificate per share if configured) | Buyer |
+| `buy_shares` | Purchase fractional shares (mints NFT certificate per share if configured). Blocked unless the buyer is allowlisted, when the allowlist is enabled | Buyer + Allowlist |
+| `add_to_allowlist` | Allow an address to buy shares (alias of `add_to_whitelist`) | Admin |
+| `remove_from_allowlist` | Revoke an address's ability to buy (alias of `remove_from_whitelist`) | Admin |
+| `add_to_whitelist` | Allow an address to buy shares | Admin |
+| `remove_from_whitelist` | Revoke an address's ability to buy | Admin |
+| `is_whitelisted` | Check whether an address is allowlisted and unexpired | None |
+| `set_allowlist_enabled` | Turn the `buy_shares` allowlist gate on or off | Admin |
+| `is_allowlist_enabled` | Whether `buy_shares` enforces the allowlist | None |
 | `set_nft_contract` | Configure NFT contract for certificate minting | Admin |
 | `get_shares` | Query user balance | None |
 | `get_available_shares` | Query remaining shares | None |
@@ -302,6 +321,55 @@ This will start an Nginx server on `http://localhost:80` that proxies requests:
 | `pause` | Pause marketplace | Admin |
 | `unpause` | Unpause marketplace | Admin |
 | `emergency_withdraw` | Withdraw tokens from contract | Admin |
+
+### Compliance and Regulatory Limitations
+
+**Read this before tokenizing any asset that carries securities-law implications.**
+
+The buyer allowlist is a coarse on-chain access gate, **not** a compliance solution. It
+is enabled by default, and `buy_shares` rejects any buyer the admin has not cleared:
+
+```bash
+# Approve an address (after completing your own KYC checks off-chain)
+soroban contract invoke --id "$CONTRACT_ID" -- add_to_allowlist --address "$BUYER"
+
+# Deployments of non-regulated assets can skip allowlisting entirely
+soroban contract invoke --id "$CONTRACT_ID" -- set_allowlist_enabled --address "$ADMIN" -- true false
+```
+
+What the allowlist **does not** do, and what you must handle off-chain:
+
+- **No KYC / identity verification.** An address on the allowlist is only as trustworthy
+  as the process that put it there. On-chain there is no way to attest that the holder
+  is a real person. Identity verification is entirely the deployer's responsibility.
+- **No accredited-investor or suitability checks.** The contract cannot evaluate net
+  worth, income, or investment experience. A jurisdiction that requires accredited or
+  sophisticated-investor status needs that determination made and recorded off-chain
+  before an address is allowlisted.
+- **No jurisdiction / geofencing.** Addresses carry no verified location, so the contract
+  cannot enforce regional restrictions. If an asset may only be held by residents of
+  certain countries, that restriction must be enforced by your allowlist process.
+- **No transfer-time or holding-period restrictions on secondary transfers.** The gate
+  covers `buy_shares` only. `buy_vested_shares` and `batch_buy_shares` enforce the
+  allowlist unconditionally, but secondary transfers go through separate functions that
+  apply their own (separately managed) transfer allowlist. Do not assume a buy-time
+  check constrains later transfers.
+- **No investor attestation, subscription-agreement signature, or record-keeping.**
+  These are legally required for many offerings and have no on-chain equivalent here.
+- **The admin is a single address with unrevoked, unaccountable power over the allowlist.**
+  There is no multi-sig or timelock on these calls, and no on-chain identity behind the
+  admin address. A compromised admin can allowlist arbitrary addresses or disable the
+  gate entirely.
+
+Disabling the allowlist (`set_allowlist_enabled(false)`) makes `buy_shares` permissionless:
+any address that can sign a transaction may purchase shares. Only do this for assets with
+no securities-law implications. Because the default is *enabled*, forgetting to configure
+anything leaves a regulated deployment closed rather than open — but note that a
+deployment that never allowlists anyone is also unable to sell to anyone.
+
+**Deploying this contract for a regulated asset is not, on its own, compliance.** You are
+responsible for obtaining any required registrations, licences, and legal advice, and for
+operating the KYC/AML and suitability processes that the on-chain allowlist assumes exist.
 
 ### NFT Share Certificates
 
