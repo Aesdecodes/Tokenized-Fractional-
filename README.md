@@ -106,6 +106,7 @@ graph TB
 - [Troubleshooting Guide](docs/troubleshooting.md) — Common issues and solutions
 - [Multi-Region Deployment](docs/multi-region-deployment.md) — Deployment strategy and failover
 - [Kubernetes Deployment](docs/kubernetes-deployment.md) — Kubernetes manifests, scaling, and self-healing
+- [Deploying Your Own Instance](docs/deploying-your-own-instance.md) — Checklist for forks running an independent, rebranded production deployment (distinct from local development setup)
 - [Database Backup & Restore](docs/backups.md) — Automated backups, S3 offsite storage, retention, and disaster recovery
 - [NFT Certificates](docs/NFT_CERTIFICATES.md)
 - [NFT Quickstart](docs/NFT_QUICKSTART.md)
@@ -444,6 +445,160 @@ When users buy shares, they receive **SEP-41 compliant NFT certificates** repres
 
 Interactive API documentation is available at [`/api-docs`](http://localhost:3001/api-docs) (Swagger UI) and [`/api-docs.json`](http://localhost:3001/api-docs.json) (raw OpenAPI spec) when the backend is running.
 
+### Example Requests
+
+The examples below run in order against a fresh backend (`ADMIN_API_KEY` exported in
+your shell). CI executes every one of them against a locally started backend and fails
+the build if a response no longer matches what is shown here — see
+[`backend/scripts/verify-readme-examples.js`](backend/scripts/verify-readme-examples.js).
+In the expected responses, `"<...>"` stands for a value that varies between runs.
+
+<!-- readme-api-examples:start -->
+
+Check the service is up:
+
+```bash
+# Expected status: 200
+curl http://localhost:3001/health
+```
+
+```json
+{
+  "status": "ok",
+  "timestamp": "<iso-timestamp>",
+  "dependencies": { "storage": { "status": "ok" } }
+}
+```
+
+Create asset metadata (new assets start as `pending`):
+
+```bash
+# Expected status: 201
+curl -X POST http://localhost:3001/api/rwa \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $ADMIN_API_KEY" \
+  -d '{
+    "contractId": "CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE",
+    "title": "Luxury Manhattan Condo Unit 12B",
+    "location": "New York, NY",
+    "description": "A fully furnished 2-bedroom condo",
+    "assetType": "real_estate",
+    "totalValuation": "2500000.00"
+  }'
+```
+
+```json
+{
+  "contractId": "CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE",
+  "title": "Luxury Manhattan Condo Unit 12B",
+  "location": "New York, NY",
+  "assetType": "real_estate",
+  "totalValuation": "2500000.00",
+  "status": "pending",
+  "createdAt": "<iso-timestamp>"
+}
+```
+
+Write endpoints reject requests without a valid key:
+
+```bash
+# Expected status: 401
+curl -X POST http://localhost:3001/api/rwa \
+  -H "Content-Type: application/json" \
+  -d '{"contractId": "CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE"}'
+```
+
+```json
+{
+  "status": 401,
+  "detail": "Unauthorized: invalid or missing API key"
+}
+```
+
+Pending assets are hidden from the public read endpoints until approved:
+
+```bash
+# Expected status: 200
+curl -X POST http://localhost:3001/api/rwa/CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE/approve \
+  -H "x-api-key: $ADMIN_API_KEY"
+```
+
+```json
+{
+  "contractId": "CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE",
+  "status": "approved"
+}
+```
+
+Fetch a single asset:
+
+```bash
+# Expected status: 200
+curl http://localhost:3001/api/rwa/CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE
+```
+
+```json
+{
+  "contractId": "CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE",
+  "title": "Luxury Manhattan Condo Unit 12B",
+  "status": "approved"
+}
+```
+
+List assets (cursor-paginated):
+
+```bash
+# Expected status: 200
+curl "http://localhost:3001/api/rwa?limit=10"
+```
+
+```json
+{
+  "data": [
+    {
+      "contractId": "CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE",
+      "title": "Luxury Manhattan Condo Unit 12B"
+    }
+  ],
+  "pagination": { "limit": 10, "total": 1 }
+}
+```
+
+Update only specific fields:
+
+```bash
+# Expected status: 200
+curl -X PATCH http://localhost:3001/api/rwa/CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE \
+  -H "Content-Type: application/json" \
+  -H "x-api-key: $ADMIN_API_KEY" \
+  -d '{"totalValuation": "2750000.00"}'
+```
+
+```json
+{
+  "contractId": "CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE",
+  "title": "Luxury Manhattan Condo Unit 12B",
+  "totalValuation": "2750000.00"
+}
+```
+
+Delete the asset:
+
+```bash
+# Expected status: 200
+curl -X DELETE http://localhost:3001/api/rwa/CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE \
+  -H "x-api-key: $ADMIN_API_KEY"
+```
+
+```json
+{
+  "message": "Asset metadata deleted",
+  "contractId": "CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE"
+}
+```
+
+<!-- readme-api-examples:end -->
+
 ## Cloud Deployment (Render)
 
 This project includes a [`render.yaml`](./render.yaml) Blueprint for one-click deployment to [Render](https://render.com).
@@ -490,6 +645,8 @@ cd frontend && npm run deploy
 
 > **Note:** Free-tier Render services spin down after inactivity. Upgrade to a paid plan for always-on availability.
 
+> **Running a fork in production?** The steps above get the upstream code onto Render. To operate an independent, rebranded instance — your own names, domains, contract, legal pages, monitoring, and secrets — follow [docs/deploying-your-own-instance.md](docs/deploying-your-own-instance.md).
+
 ## Contributors
 
-We appreciate all contributions! See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full contributor spotlight. To contribute, please review [CONTRIBUTING.md](CONTRIBUTING.md).
+We appreciate all contributions! See [CONTRIBUTORS.md](CONTRIBUTORS.md) for the full contributor spotlight. To contribute, please review [CONTRIBUTING.md](CONTRIBUTING.md). Everyone participating in this project is expected to follow our [Code of Conduct](CODE_OF_CONDUCT.md).

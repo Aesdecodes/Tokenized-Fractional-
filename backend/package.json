@@ -27,7 +27,8 @@
     "backup:verify": "node backup.js --verify-latest",
     "restore": "node restore.js",
     "docs:generate": "node scripts/generate-docs.js",
-    "docs:serve": "node scripts/generate-docs.js && echo \"Docs generated in docs/api/\""
+    "docs:serve": "node scripts/generate-docs.js && echo \"Docs generated in docs/api/\"",
+    "docs:verify-examples": "node scripts/verify-readme-examples.js"
   },
   "jest": {
     "testEnvironment": "node",

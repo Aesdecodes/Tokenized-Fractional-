@@ -243,6 +243,14 @@ export async function executeReconciliation(report, data = {}) {
         );
         break;
 
+      case 'onchain_drift':
+        repairResult = await reconcileDbBlockchainMismatch(
+          report.contractId,
+          data.dbAsset,
+          { [issue.details.field]: issue.details.onChainValue }
+        );
+        break;
+
       case 'blockchain_warning':
         repairResult = await reconcileBlockchainWarnings(report.contractId, [issue.message]);
         break;
