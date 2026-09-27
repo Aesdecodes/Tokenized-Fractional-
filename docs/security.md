@@ -156,7 +156,8 @@ When an incident is detected:
 
 ### Log Monitoring
 
-- **ELK Stack** (Elasticsearch, Logstash, Kibana): Centralized log aggregation and analysis.
+- **ELK Stack** (Elasticsearch, Logstash, Kibana): Centralized log aggregation and analysis. Configuration lives in `elk/` — see [elk/README.md](../elk/README.md).
+- **Structured JSON logs**: The backend emits newline-delimited JSON with a consistent level, a `requestId` on every line, and credentials redacted before serialisation. See [OBSERVABILITY.md](OBSERVABILITY.md).
 - **Filebeat**: Ships nginx and application logs to Logstash.
 - Monitor for:
   - Repeated 401/403 responses (brute force attempts)

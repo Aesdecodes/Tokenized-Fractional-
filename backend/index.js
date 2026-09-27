@@ -9,9 +9,7 @@ import express from 'express';
 import { Router } from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import pino from 'pino';
 import pinoHttp from 'pino-http';
-import * as Sentry from '@sentry/node';
 import { readFileSync, writeFileSync, existsSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -39,6 +37,14 @@ import {
 } from './src/middleware/problemDetails.js';
 import { generateOpenapiSpec } from './src/services/openapiService.js';
 import { getDatabase } from './src/services/database.js';
+import { logger, runWithRequestContext } from './logger.js';
+import {
+  initErrorTracking,
+  installErrorTrackingRequestScope,
+  captureException,
+  errorTrackingStatus,
+  reportError,
+} from './src/services/errorTracking.js';
 import { wsManager } from './websocket.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -63,27 +69,14 @@ const CORS_ORIGINS = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(',').map(s => s.trim())
   : ['http://localhost:5173', 'http://localhost:4173'];
 
-// ── Logger ────────────────────────────────────────────────────────────────────
-
-
-// ── Sentry ────────────────────────────────────────────────────────────────────
-if (process.env.SENTRY_DSN && process.env.NODE_ENV !== 'test') {
-  Sentry.init({
-    dsn: process.env.SENTRY_DSN,
-    environment: process.env.NODE_ENV || 'development',
-    tracesSampleRate: process.env.SENTRY_TRACES_SAMPLE_RATE
-      ? parseFloat(process.env.SENTRY_TRACES_SAMPLE_RATE)
-      : 0.1,
-    profilesSampleRate: process.env.SENTRY_PROFILES_SAMPLE_RATE
-      ? parseFloat(process.env.SENTRY_PROFILES_SAMPLE_RATE)
-      : 0.1,
-    integrations: [
-      Sentry.httpIntegration({ breadcrumbs: true }),
-      Sentry.expressIntegration(),
-    ],
-  });
-  logger.info({ dsnPrefix: process.env.SENTRY_DSN.slice(0, 30) }, 'Sentry initialized');
-}
+// ── Structured logging + error tracking (issue #703) ──────────────────────────
+// One pino instance for the whole process (see logger.js): newline-delimited
+// JSON on stdout, levels from LOG_LEVEL, and automatic redaction of secrets
+// such as ADMIN_API_KEY. Sentry provides the alerting side; both are opt-in so
+// local development and tests never emit to a third party. The full contract,
+// including the elk/ aggregation pipeline, is documented in
+// docs/OBSERVABILITY.md.
+initErrorTracking();
 
 // ── Data helpers ──────────────────────────────────────────────────────────────
 function getDataFile() {
@@ -95,8 +88,8 @@ function loadData() {
   if (!existsSync(file)) return {};
   try {
     return JSON.parse(readFileSync(file, 'utf-8'));
-  } catch {
-    logger.error('Corrupted data file, starting fresh');
+  } catch (err) {
+    logger.error({ err, file }, 'Corrupted data file, starting fresh');
     return {};
   }
 }
@@ -297,8 +290,8 @@ function loadWebhooks() {
   if (!existsSync(file)) return {};
   try {
     return JSON.parse(readFileSync(file, 'utf-8'));
-  } catch {
-    logger.error('Corrupted webhook data file, starting fresh');
+  } catch (err) {
+    logger.error({ err, file }, 'Corrupted webhook data file, starting fresh');
     return {};
   }
 }
@@ -408,11 +401,8 @@ async function fireWebhooks(event, data) {
 // ── App ───────────────────────────────────────────────────────────────────────
 const app = express();
 
-// Sentry request handler must be the first middleware
-if (process.env.SENTRY_DSN) {
-  app.use(Sentry.Handlers.requestHandler());
-  app.use(Sentry.Handlers.tracingHandler());
-}
+// Error tracking must see every request before anything else can fail.
+installErrorTrackingRequestScope(app);
 
 // Prometheus metrics for backend observability (Issue #518)
 app.use(metricsMiddleware);
@@ -423,11 +413,14 @@ app.use(cors({ origin: CORS_ORIGINS, methods: ['GET', 'POST', 'PATCH', 'DELETE']
 app.use(express.json({ limit: '10kb' }));
 
 // ── Request ID middleware ──────────────────────────────────────────────────────
+// The ID is echoed in X-Request-ID so callers can quote it in support tickets,
+// and opened as an async context so that every log line emitted while handling
+// the request — including from services and background jobs — carries it.
 app.use((req, res, next) => {
   const id = req.headers['x-request-id'] || randomUUID();
   req.requestId = id;
   res.setHeader('X-Request-ID', id);
-  next();
+  runWithRequestContext({ requestId: id }, next);
 });
 
 // Issue #519: RFC 7807 problem-details interceptor — normalizes legacy error
@@ -445,6 +438,7 @@ app.use(pinoHttp({
   logger,
   autoLogging: { ignore: req => req.url === '/health' },
   genReqId: req => req.requestId,
+  customProps: req => ({ requestId: req.requestId }),
 }));
 
 // ── Rate Limiting Services ─────────────────────────────────────────────────────
@@ -1712,10 +1706,21 @@ app.post('/api/v1/batch', batchHandler);
 
 app.use(problemDetailsNotFoundHandler());
 
-// Sentry error handler must be registered before other error handlers
-if (process.env.SENTRY_DSN) {
-  app.use(Sentry.Handlers.errorHandler());
-}
+// Error tracking: report server-side failures to Sentry, tagged with the
+// request ID so an alert can be traced back to the logs. Registered before
+// problemDetailsErrorHandler(), which owns the log line for the same error.
+// 4xx responses are client errors rather than incidents and are only logged.
+app.use((err, req, _res, next) => {
+  const status = Number(err?.status) || Number(err?.statusCode) || 500;
+  if (status >= 500) {
+    captureException(err, {
+      requestId: req.requestId,
+      method: req.method,
+      path: req.originalUrl || req.url,
+    });
+  }
+  next(err);
+});
 
 app.use(problemDetailsErrorHandler());
 
@@ -1748,7 +1753,7 @@ async function initializeApolloServer(expressApp, httpServer) {
         return { isAdmin, apiKey };
       },
       formatError: (error) => {
-        logger.error({ error: error.message, extensions: error.extensions }, 'GraphQL error');
+        logger.error({ err: error, extensions: error.extensions }, 'GraphQL error');
         return {
           message: error.message,
           extensions: {
@@ -1784,7 +1789,7 @@ async function initializeApolloServer(expressApp, httpServer) {
 
     return server;
   } catch (error) {
-    logger.error({ error: error.message }, 'Failed to initialize Apollo Server');
+    reportError(error, { message: 'Failed to initialize Apollo Server' });
     throw error;
   }
 }
@@ -1794,6 +1799,8 @@ if (process.env.NODE_ENV !== 'test') {
   const httpServer = app.listen(PORT, () => {
     logger.info({
       port: PORT,
+      logLevel: logger.level,
+      errorTracking: errorTrackingStatus(),
       rateLimiterTiers: Object.keys(rateLimiterService.getAvailableTiers()).length,
       anomalyDetection: anomalyDetector._enabled,
       geoLimiting: geoLimiter.enabled,
@@ -1809,7 +1816,7 @@ if (process.env.NODE_ENV !== 'test') {
           logger.info('Materialized view mv_historical_vault_metrics refreshed in background');
         }
       } catch (error) {
-        logger.error({ error: error.message }, 'Failed to refresh materialized view');
+        reportError(error, { message: 'Failed to refresh materialized view' });
       }
     }, 60 * 60 * 1000); // 1 hour
   });
