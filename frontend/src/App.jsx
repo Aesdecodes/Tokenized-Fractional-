@@ -7,7 +7,7 @@ import Header from './components/Header/Header';
 import Navbar from './components/Navbar/Navbar';
 import Card from './components/Card/Card';
 import Alert from './components/Alert/Alert';
-import Badge from './components/Badge/Badge';
+import NetworkBadge from './components/NetworkBadge/NetworkBadge';
 import Button from './components/Button/Button';
 import Skeleton from './components/Skeleton/Skeleton';
 import AssetGrid from './components/AssetGrid/AssetGrid';
@@ -641,8 +641,6 @@ function App() {
     }
   };
 
-  const isTestnet = useMemo(() => NETWORK_PASSPHRASE === Networks.TESTNET, []);
-
   return (
     <div className={styles.container}>
       <OnboardingTour />
@@ -664,19 +662,7 @@ function App() {
               />
             </a>
             <h1 className={styles.title}>RWA Marketplace</h1>
-            <Tooltip
-              content={
-                isTestnet
-                  ? 'Connected to Stellar Testnet — safe for testing'
-                  : 'Connected to Stellar Mainnet — real funds at risk'
-              }
-              position="bottom"
-              trigger="hover"
-            >
-              <Badge variant={isTestnet ? 'success' : 'danger'}>
-                {isTestnet ? 'TESTNET' : 'MAINNET'}
-              </Badge>
-            </Tooltip>
+            <NetworkBadge />
           </div>
         </div>
 
