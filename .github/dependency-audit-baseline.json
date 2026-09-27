@@ -275,13 +275,6 @@
       "direct": true,
       "fix": "upgrade-to nodemailer@10.0.11"
     },
-    "/backend::validator::GHSA-9965-vmph-33xx+GHSA-vghf-hv5q-vc2g": {
-      "severity": "high",
-      "project": "/backend",
-      "package": "validator",
-      "direct": false,
-      "fix": "in-range"
-    },
     "/frontend::@remix-run/router::GHSA-2j2x-hqr9-3h42+GHSA-2w69-qvjg-hvjx": {
       "severity": "high",
       "project": "/frontend",
