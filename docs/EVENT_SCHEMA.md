@@ -29,7 +29,9 @@ The contract ID is always the marketplace contract itself.
 | Event | Triggered By | Fields |
 |---|---|---|
 | `EventSetPrice` | `set_price()` | `old_price: i128`, `new_price: i128` |
+| `EventUpdatePrice` | `update_price()` | `old_price: i128`, `new_price: i128` |
 | `EventSetTotalShares` | `set_total_shares()` | `old_total: u32`, `new_total: u32` |
+| `EventIncreaseTotalShares` | `increase_total_shares()` | `old_total: u32`, `additional: u32`, `new_total: u32` |
 | `EventSetMaxSharesPerUser` | `set_max_shares_per_user()` | `old_max: u32`, `new_max: u32` |
 
 ### Share Purchases
@@ -126,9 +128,9 @@ The contract ID is always the marketplace contract itself.
 
 Events are designed to allow full state reconstruction:
 
-1. **Total shares & available shares**: Track `EventInit`, `EventBuyShares`, `EventSetTotalShares`, `EventBuybackShares`, `EventOrderFilled`.
+1. **Total shares & available shares**: Track `EventInit`, `EventBuyShares`, `EventSetTotalShares`, `EventIncreaseTotalShares`, `EventBuybackShares`, `EventOrderFilled`.
 2. **Per-holder balances**: Track `EventBuyShares`, `EventTransfer`, `EventBuybackShares`, `EventClaimVestedShares`, `EventOrderFilled`, `EventLockForBridge`, `EventUnlockFromBridge`.
-3. **Price history**: Track `EventSetPrice`, `EventOraclePriceFetched`, `EventOraclePriceFallback`.
+3. **Price history**: Track `EventSetPrice`, `EventUpdatePrice`, `EventOraclePriceFetched`, `EventOraclePriceFallback`.
 4. **Dividend history**: Track `EventSetDividendSchedule`, `EventDistributeDividends`, `EventScheduledDividend`.
 
 ### Indexing Strategy

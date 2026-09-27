@@ -43,10 +43,69 @@ Report vulnerabilities privately via one of these channels:
 
 The Soroban smart contract manages financial transactions on the Stellar network. High-severity issues include:
 
-- Unauthorised access to `admin`-only functions (`pause`, `unpause`, `emergency_withdraw`).
+- Unauthorised access to `admin`-only functions (`pause`, `unpause`, `emergency_withdraw`, `update_price`, `increase_total_shares`).
 - Re-entrancy or integer overflow in `buy_shares`.
 - Bypassing the pause mechanism.
 - Token drain or fund misappropriation.
+
+## Runbook: Correcting a Deployment Mistake
+
+`init` writes `PricePerShare` and `TotalShares` exactly once. If either value was mis-keyed at
+deployment (a misplaced decimal, the wrong token scale, a tranche size that does not match the
+deposit agreement), the correction is made **in place** on the existing contract — no redeploy, no
+holder migration, no loss of share balances.
+
+Two admin-only entry points exist for this, and both refuse to run unless the marketplace is
+already paused:
+
+| Function | Purpose | Rejects |
+| --- | --- | --- |
+| `update_price(new_price)` | Replaces the static price per share (smallest unit of the payment token). | Non-admin callers, a live (unpaused) marketplace, `new_price <= 0`. |
+| `increase_total_shares(additional)` | Adds a follow-on tranche of the same underlying asset: raises `TotalShares` **and** the `AvailableShares` pool by `additional`. | Non-admin callers, a live (unpaused) marketplace, `additional == 0`, a delisted asset, `u32` overflow. |
+
+`increase_total_shares` is additive only. It can never shrink supply below the number of shares
+already issued, and no holder's balance changes unless they buy: the new shares are only ever sold
+through `buy_shares`, which still enforces the whitelist, the purchase limits and payment. Existing
+holders keep their exact share count; their percentage of the enlarged supply shrinks, as it would
+with any new issuance.
+
+Each call emits an event carrying the before and after values: `EventUpdatePrice`
+(`old_price`, `new_price`) and `EventIncreaseTotalShares` (`old_total`, `additional`, `new_total`).
+Use these for reconciliation, not the transaction envelope.
+
+### Procedure
+
+1. **Confirm the mistake.** Read `get_price()`, `get_total_shares()` and `get_available_shares()`
+   and compare them against the signed offering memorandum. Determine whether the bad value was ever
+   *used* — check `EventBuyShares` and the token balances for purchases settled at the wrong price.
+2. **Announce and halt.** Tell holders/support before touching the contract, then call `pause()`.
+   This is what unlocks the correction functions and guarantees no buy settles at the stale value
+   while the correction is in flight.
+3. **Check for an oracle.** If `get_oracle()` returns an address, `buy_shares` reads the price from
+   the oracle first and only falls back to the static price. If the *oracle* is what is wrong, fix
+   the oracle (or call `clear_oracle()`) first — otherwise `update_price` writes a value that trades
+   never consult.
+4. **Apply the correction.** Invoke `update_price` and/or `increase_total_shares` as the admin
+   address. For a multi-sig deployment, the admin address is the multi-sig account and its approval
+   policy is what signs the transaction.
+5. **Verify.** Re-read `get_price()` / `get_total_shares()` / `get_available_shares()`, and confirm
+   `is_delisted()` is still `false`. If `TotalShares` was raised, confirm `AvailableShares` rose by
+   the same `additional`, and that already-issued shares were untouched.
+6. **Resume.** Call `unpause()` and confirm `is_paused()` is `false`.
+7. **Publish.** Attach the `EventUpdatePrice` / `EventIncreaseTotalShares` records to the incident
+   record, and notify holders that the correction happened and when trading resumed.
+
+### Notes and limits
+
+- The legacy `set_price` / `set_total_shares` functions are **not** pause-gated and can set an
+  absolute total in either direction. Prefer `update_price` / `increase_total_shares` for
+  corrections: they are strictly safer, and they are the functions the operational process
+  documented above relies on.
+- `increase_total_shares` cannot be used on a delisted asset. `delist_asset` is permanent, so a
+  retired asset's supply stays fixed forever.
+- These functions change the terms of the offering. Treat them as privileged operations: the admin
+  key should be a multi-sig, corrections should be announced in advance, and every invocation is
+  permanently visible on-chain.
 
 ## Disclosure Policy
 
