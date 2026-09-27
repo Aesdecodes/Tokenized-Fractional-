@@ -117,6 +117,9 @@ pub enum DataKey {
     ImplementationVersion,
     /// Last snapshot ledger sequence
     LastSnapshotLedger,
+    /// Whether the buyer allowlist gate on `buy_shares` is enforced
+    /// (Issue #700). Absent means enabled - see `_is_allowlist_enabled`.
+    AllowlistEnabled,
     /// Address is exempt from purchase limits
     LimitExempt(Address),
     /// Limit violation count per address
@@ -418,6 +421,14 @@ pub struct EventBuyShares {
     pub buyer: Address,
     pub shares: u32,
     pub total_cost: i128,
+}
+
+/// Emitted when an admin enables or disables the buyer allowlist gate on
+/// `buy_shares` (Issue #700). Off-chain indexers should treat `enabled =
+/// false` as the signal that the deployment is permissionless.
+#[contractevent(data_format = "vec")]
+pub struct EventAllowlistSet {
+    pub enabled: bool,
 }
 
 #[contractevent]
@@ -733,6 +744,22 @@ fn _require_circuit_breaker_clear(env: &Env) {
     }
 }
 
+// ── Issue #700: Opt-in allowlist gate ──────────────────────────────────
+
+/// Whether the buyer allowlist is enforced on `buy_shares`.
+///
+/// Defaults to `true` when the key is absent. Deployments created before
+/// Issue #700 never wrote this key and enforced the allowlist
+/// unconditionally, so defaulting to `true` preserves their behavior instead
+/// of silently turning a regulated marketplace permissionless. Only an
+/// explicit `set_allowlist_enabled(false)` relaxes the gate.
+fn _is_allowlist_enabled(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::AllowlistEnabled)
+        .unwrap_or(true)
+}
+
 // ── Issue #270: Whitelist validation ───────────────────────────────────
 
 /// Validate that an address is whitelisted and not expired.
@@ -938,8 +965,12 @@ impl RwaMarketplace {
         // Issue #311: Check circuit breaker
         _require_circuit_breaker_clear(&env);
 
-        // Issue #270: Enhanced whitelist validation (expiry-aware)
-        _validate_whitelist(&env, &buyer);
+        // Issue #270: Enhanced whitelist validation (expiry-aware).
+        // Issue #700: the gate is opt-in for non-regulated deployments, but
+        // defaults to enforced (see `_is_allowlist_enabled`).
+        if _is_allowlist_enabled(&env) {
+            _validate_whitelist(&env, &buyer);
+        }
 
         // Issue #274: Purchase limit validation
         Self::require_accepted_token(&env, &payment_token);
@@ -1067,6 +1098,45 @@ impl RwaMarketplace {
         admin.require_auth();
         env.storage().persistent().remove(&DataKey::Whitelisted(addr.clone()));
         EventWhitelistRemoved { addr }.publish(&env);
+    }
+
+    /// Allow an address to buy shares. Admin only.
+    ///
+    /// Compliance-oriented alias for `add_to_whitelist`; both write the same
+    /// `Whitelisted` entry, so an address added through either name is
+    /// accepted by the gate in `buy_shares`.
+    pub fn add_to_allowlist(env: Env, addr: Address) {
+        Self::add_to_whitelist(env, addr);
+    }
+
+    /// Revoke an address's ability to buy shares. Admin only.
+    ///
+    /// Compliance-oriented alias for `remove_from_whitelist`; both remove the
+    /// same `Whitelisted` entry.
+    pub fn remove_from_allowlist(env: Env, addr: Address) {
+        Self::remove_from_whitelist(env, addr);
+    }
+
+    /// Enable or disable the buyer allowlist on `buy_shares`. Admin only.
+    ///
+    /// Deployments tokenizing a regulated instrument (real estate, securities,
+    /// commodities) should leave this enabled - the default - so that only
+    /// addresses the admin has cleared may buy. Deployments of non-regulated
+    /// assets may disable it so buyers do not have to be allowlisted first.
+    ///
+    /// This only relaxes the gate for `buy_shares`. `buy_vested_shares` and
+    /// `batch_buy_shares` enforce the allowlist unconditionally.
+    pub fn set_allowlist_enabled(env: Env, enabled: bool) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin)
+            .expect("Contract not initialized: admin");
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::AllowlistEnabled, &enabled);
+        EventAllowlistSet { enabled }.publish(&env);
+    }
+
+    /// Whether `buy_shares` currently enforces the buyer allowlist.
+    pub fn is_allowlist_enabled(env: Env) -> bool {
+        _is_allowlist_enabled(&env)
     }
 
     pub fn is_whitelisted(env: Env, addr: Address) -> bool {
@@ -4128,6 +4198,84 @@ mod test {
         assert!(!c.is_whitelisted(&te.buyer));
 
         c.buy_shares(&te.buyer, &25, &te.token_id);
+    }
+
+    // ── Issue #700: opt-in allowlist ─────────────────────────────────────
+
+    #[test]
+    fn test_allowlist_enforced_by_default() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+
+        // Deployments that never call the setter must keep the pre-#700
+        // behavior of enforcing the allowlist.
+        assert!(c.is_allowlist_enabled());
+    }
+
+    #[test]
+    fn test_allowlist_disabled_permits_unlisted_buyer() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+        mint(&te, &te.buyer, 100000);
+
+        assert!(!c.is_whitelisted(&te.buyer));
+        c.set_allowlist_enabled(&false);
+        assert!(!c.is_allowlist_enabled());
+
+        // Non-regulated asset: no allowlisting required to buy.
+        c.buy_shares(&te.buyer, &25, &te.token_id);
+        assert_eq!(c.get_shares(&te.buyer), 25);
+    }
+
+    #[test]
+    fn test_allowlist_reenabled_blocks_unlisted_buyer() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+        mint(&te, &te.buyer, 100000);
+
+        c.set_allowlist_enabled(&false);
+        c.set_allowlist_enabled(&true);
+        assert!(c.is_allowlist_enabled());
+
+        let res = c.try_buy_shares(&te.buyer, &25, &te.token_id);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_allowlist_alias_add_and_remove() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+        mint(&te, &te.buyer, 100000);
+
+        // The *_allowlist names must drive the same storage as *_whitelist.
+        c.add_to_allowlist(&te.buyer);
+        assert!(c.is_whitelisted(&te.buyer));
+        c.buy_shares(&te.buyer, &25, &te.token_id);
+
+        c.remove_from_allowlist(&te.buyer);
+        assert!(!c.is_whitelisted(&te.buyer));
+
+        // With the gate on, the removal blocks further purchases.
+        let res = c.try_buy_shares(&te.buyer, &5, &te.token_id);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn test_allowlist_respected_by_whitelist_named_api() {
+        let te = setup();
+        let c = client(&te);
+        c.init(&te.admin, &te.token_id, &100, &1000);
+        mint(&te, &te.buyer, 100000);
+
+        // An address added via the legacy name is still honored by the gate.
+        c.add_to_whitelist(&te.buyer);
+        c.set_allowlist_enabled(&true);
+        c.buy_shares(&te.buyer, &25, &te.token_id);
+        assert_eq!(c.get_shares(&te.buyer), 25);
     }
 
     #[test]
