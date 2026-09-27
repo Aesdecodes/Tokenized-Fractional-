@@ -12,6 +12,7 @@ Thank you for your interest in contributing! This document outlines the process 
 - [Pull Request Process](#pull-request-process)
 - [Local Secret Scanning](#local-secret-scanning)
 - [Testing](#testing)
+- [Internationalization (i18n)](#internationalization-i18n)
 - [Reporting Bugs](#reporting-bugs)
 - [Requesting Features](#requesting-features)
 
@@ -382,6 +383,129 @@ npm run dev     # Start dev server
 npm run build   # Production build
 npm run preview # Preview production build
 ```
+
+---
+
+## Internationalization (i18n)
+
+The frontend ships multiple languages and **every user-facing string must go
+through the translation layer** — no hardcoded copy in JSX, `aria-label`s or
+`placeholder`s.
+
+### How it is wired
+
+| Piece | Location |
+| --- | --- |
+| i18next bootstrap (resources, language detection, `<html lang>` / `dir`) | `frontend/src/i18n.js` |
+| Language registry — single source of truth for the shipped locales | `frontend/src/i18n/languages.js` |
+| Translation resources | `frontend/src/locales/<code>.json` |
+| Locale-aware dates, numbers and currency | `frontend/src/utils/i18nFormatters.js` |
+| Language switcher and language context | `frontend/src/components/LanguageSwitcher/`, `frontend/src/context/LanguageContext.jsx` |
+| Parity rules shared by the checker and the tests | `frontend/src/i18n/localeParity.js` |
+| Checker — `npm run i18n:check` | `frontend/scripts/check-locales.js` |
+
+Longer-form reference material lives in `docs/i18n.md`, `docs/i18n-QUICK-START.md`
+and `I18N_README.md`.
+
+### Using translations
+
+```jsx
+import { useTranslation } from 'react-i18next';
+
+export function BuyButton() {
+  const { t } = useTranslation();
+  return <button>{t('marketplace.buyButton')}</button>;
+}
+```
+
+- `en.json` is the source of truth: add the English key first, then the same key
+  in every other locale file.
+- Use `defaultValue` instead of `||` fallbacks. i18next returns the key itself
+  for a missing translation and the key is truthy, so
+  `t('search.title') || 'Search & Filter'` renders `search.title` to the user
+  rather than the fallback.
+- Interpolate with `{{placeholders}}`; the checker verifies every locale keeps
+  each placeholder English uses.
+- Format dates, numbers and currency through `src/utils/i18nFormatters.js`
+  (`formatLocalCurrency`, `formatLocalDate`, `formatLocalNumber`, …) instead of
+  calling `toLocaleString` directly, so the active language is applied
+  consistently.
+
+### Adding a new language
+
+Worked example for Arabic (`ar`):
+
+1. **Create the resource file.** Copying English guarantees the key set matches;
+   then translate the **values** only — never rename, add or remove keys in a
+   non-English file.
+
+   ```bash
+   cd frontend
+   cp src/locales/en.json src/locales/ar.json
+   ```
+
+2. **Register the language** in `frontend/src/i18n/languages.js`:
+
+   ```js
+   export const SUPPORTED_LANGUAGES = [
+     // …
+     { code: 'ar', label: 'العربية', name: 'Arabic' },
+   ];
+   ```
+
+3. **Register the resource** in `frontend/src/i18n.js`:
+
+   ```js
+   import ar from './locales/ar.json';
+   // …
+   resources: { /* … */ ar: { translation: ar } },
+   ```
+
+4. **Add right-to-left support** — skip this step for left-to-right languages.
+   In `frontend/src/utils/i18nFormatters.js`:
+
+   ```js
+   export const RTL_LANGUAGES = new Set(['ar', 'he', 'fa', 'ur']);
+   ```
+
+   `i18n.js` already applies `dir="rtl"` and the `rtl` class when the language
+   changes.
+
+5. **Run the checks:**
+
+   ```bash
+   npm run i18n:check   # parity, placeholders, registration, key usage
+   npm test             # includes src/test/i18nLocaleParity.test.js
+   ```
+
+6. **Verify in the browser:** switch language, then confirm the switcher shows the
+   new language and `<html lang>` / `dir` update, the choice survives a reload
+   (cached in `localStorage` under `i18nextLng`), dates/numbers/currency follow
+   the locale, and — for RTL — the layout mirrors without clipping text.
+
+### Rules enforced for you
+
+`npm run i18n:check` (run from `frontend/`) fails when:
+
+- a registered language has no `src/locales/<code>.json`, or a locale file is not
+  registered in `src/i18n/languages.js`;
+- a locale does not define exactly the keys English defines (missing **or**
+  orphaned);
+- a translation is empty or whitespace-only;
+- a locale drops a `{{placeholder}}` that English uses;
+- `src/i18n.js` does not import/register every language, or does not fall back to
+  `en`;
+- the source tree calls `t('some.key')` for a key that `en.json` does not define —
+  that key would render verbatim in the UI.
+
+`src/test/i18nLocaleParity.test.js` applies the same rules in `npm test`, and CI
+(`.github/workflows/i18n-check.yml`) runs the checker on every pull request that
+touches `frontend/`.
+
+Translations that are byte-identical to English are reported so a reviewer can
+confirm them. Add genuine cognates (proper nouns, `USD ($)`, …) to
+`IDENTICAL_VALUE_ALLOWLIST` in `src/i18n/localeParity.js` instead of inventing a
+translation.
 
 ---
 

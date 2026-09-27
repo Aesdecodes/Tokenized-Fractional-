@@ -7,14 +7,15 @@ import es from './locales/es.json';
 import fr from './locales/fr.json';
 import de from './locales/de.json';
 import { isRTLLanguage, getLanguageDirection } from './utils/i18nFormatters';
+import { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, SUPPORTED_LANGUAGE_CODES } from './i18n/languages';
 
-// Language configuration
-export const SUPPORTED_LANGUAGES = [
-  { code: 'en', label: 'English', name: 'English' },
-  { code: 'es', label: 'Español', name: 'Spanish' },
-  { code: 'fr', label: 'Français', name: 'French' },
-  { code: 'de', label: 'Deutsch', name: 'German' },
-];
+// The language registry lives in ./i18n/languages.js so the locale checker and
+// the parity tests can read it without booting i18next (this module touches
+// `document` on import). Re-exported here because components import
+// `SUPPORTED_LANGUAGES` from this file. When adding a language: add it to the
+// registry, add `src/locales/<code>.json`, and register the resource below —
+// `npm run i18n:check` fails if any of the three is missing.
+export { DEFAULT_LANGUAGE, SUPPORTED_LANGUAGES, SUPPORTED_LANGUAGE_CODES };
 
 i18n
   .use(LanguageDetector)
@@ -26,7 +27,7 @@ i18n
       fr: { translation: fr },
       de: { translation: de },
     },
-    fallbackLng: 'en',
+    fallbackLng: DEFAULT_LANGUAGE,
     interpolation: { escapeValue: false },
     detection: {
       order: ['localStorage', 'navigator'],
@@ -38,12 +39,12 @@ i18n
 i18n.on('languageChanged', (lng) => {
   // Set lang attribute for accessibility
   document.documentElement.lang = lng;
-  
+
   // Set dir attribute for RTL support
   const direction = getLanguageDirection(lng);
   document.documentElement.dir = direction;
   document.body.dir = direction;
-  
+
   // Add RTL class for CSS styling
   if (isRTLLanguage(lng)) {
     document.documentElement.classList.add('rtl');
@@ -55,7 +56,7 @@ i18n.on('languageChanged', (lng) => {
 });
 
 // Set initial language attributes
-const initialLng = i18n.language || 'en';
+const initialLng = i18n.language || DEFAULT_LANGUAGE;
 document.documentElement.lang = initialLng;
 const initialDir = getLanguageDirection(initialLng);
 document.documentElement.dir = initialDir;
