@@ -36,7 +36,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version: '22'
 
       # No `npm ci` on purpose: `npm audit` resolves the dependency tree from
       # package-lock.json alone, so this stays fast and cannot be broken by an
@@ -59,7 +59,7 @@ jobs:
           key: cargo-audit-0.22.2-${{ runner.os }}
 
       - name: Install cargo-audit
-        run: cargo install cargo-audit --version 0.22.2 --locked
+        run: cargo install cargo-audit --version 0.22.2 --locked --force
 
       - name: Audit contract dependencies
         working-directory: contracts

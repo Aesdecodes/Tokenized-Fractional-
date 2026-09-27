@@ -935,6 +935,10 @@ impl RwaMarketplace {
             panic!("Total shares must be greater than zero");
         }
 
+        // Issue #636: Validate payment_token is a deployed token contract
+        let token_client = token::TokenClient::new(&env, &payment_token);
+        token_client.symbol();
+
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::PaymentToken, &payment_token);
         env.storage().instance().set(&DataKey::PricePerShare, &price);
@@ -4500,6 +4504,15 @@ mod test {
         let te = setup();
         let c = client(&te);
         c.init(&te.admin, &te.token_id, &100, &0);
+    }
+
+    #[test]
+    #[should_panic]
+    fn test_init_invalid_payment_token() {
+        let te = setup();
+        let c = client(&te);
+        let bogus = Address::generate(&te.env);
+        c.init(&te.admin, &bogus, &100, &1000);
     }
 
     #[test]

@@ -16,34 +16,6 @@
       "direct": false,
       "fix": "in-range"
     },
-    "/backend::@babel/core::via:json5": {
-      "severity": "high",
-      "project": "/backend",
-      "package": "@babel/core",
-      "direct": false,
-      "fix": "upgrade-to @jest/globals@29.7.0"
-    },
-    "/backend::@jest/expect::via:jest-snapshot": {
-      "severity": "high",
-      "project": "/backend",
-      "package": "@jest/expect",
-      "direct": false,
-      "fix": "upgrade-to @jest/globals@29.7.0"
-    },
-    "/backend::@jest/globals::via:@jest/expect": {
-      "severity": "high",
-      "project": "/backend",
-      "package": "@jest/globals",
-      "direct": true,
-      "fix": "upgrade-to @jest/globals@29.7.0"
-    },
-    "/backend::@jest/transform::via:@babel/core": {
-      "severity": "high",
-      "project": "/backend",
-      "package": "@jest/transform",
-      "direct": false,
-      "fix": "upgrade-to @jest/globals@29.7.0"
-    },
     "/backend::brace-expansion::GHSA-3jxr-9vmj-r5cp+GHSA-mh99-v99m-4gvg+GHSA-rgw5-rvv9-x895": {
       "severity": "high",
       "project": "/backend",
@@ -72,20 +44,6 @@
       "direct": false,
       "fix": "upgrade-to mjml@5.4.1"
     },
-    "/backend::jest-snapshot::via:@babel/core+via:@jest/transform": {
-      "severity": "high",
-      "project": "/backend",
-      "package": "jest-snapshot",
-      "direct": false,
-      "fix": "upgrade-to @jest/globals@29.7.0"
-    },
-    "/backend::jest::via:html-minifier+via:mjml-core+via:mjml-migrate": {
-      "severity": "high",
-      "project": "/backend",
-      "package": "jest",
-      "direct": true,
-      "fix": "in-range"
-    },
     "/backend::js-yaml::GHSA-2883-xcg3-v3hh+GHSA-5p4m-2wfm-xmqj": {
       "severity": "high",
       "project": "/backend",
@@ -93,19 +51,12 @@
       "direct": false,
       "fix": "in-range"
     },
-    "/backend::json5::via:mjml-core": {
-      "severity": "high",
-      "project": "/backend",
-      "package": "json5",
-      "direct": false,
-      "fix": "upgrade-to @jest/globals@29.7.0"
-    },
     "/backend::mjml-accordion::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-accordion",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-body::via:mjml-core": {
       "severity": "high",
@@ -119,14 +70,14 @@
       "project": "/backend",
       "package": "mjml-button",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-carousel::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-carousel",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-cli::via:html-minifier+via:mjml-core+via:mjml-migrate": {
       "severity": "high",
@@ -140,7 +91,7 @@
       "project": "/backend",
       "package": "mjml-column",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-core::via:html-minifier+via:mjml-migrate": {
       "severity": "high",
@@ -154,84 +105,84 @@
       "project": "/backend",
       "package": "mjml-divider",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-group::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-group",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-head-attributes::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-head-attributes",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-head-breakpoint::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-head-breakpoint",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-head-font::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-head-font",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-head-html-attributes::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-head-html-attributes",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-head-preview::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-head-preview",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-head-style::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-head-style",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-head-title::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-head-title",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-head::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-head",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-hero::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-hero",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-image::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-image",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-migrate::via:mjml-core": {
       "severity": "high",
@@ -245,7 +196,7 @@
       "project": "/backend",
       "package": "mjml-navbar",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-preset-core::via:mjml-accordion+via:mjml-body+via:mjml-button+via:mjml-carousel+via:mjml-column+via:mjml-divider+via:mjml-group+via:mjml-head+via:mjml-head-attributes+via:mjml-head-breakpoint+via:mjml-head-font+via:mjml-head-html-attributes+via:mjml-head-preview+via:mjml-head-style+via:mjml-head-title+via:mjml-hero+via:mjml-image+via:mjml-navbar+via:mjml-raw+via:mjml-section+via:mjml-social+via:mjml-spacer+via:mjml-table+via:mjml-text+via:mjml-wrapper": {
       "severity": "high",
@@ -259,49 +210,49 @@
       "project": "/backend",
       "package": "mjml-raw",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-section::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-section",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-social::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-social",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-spacer::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-spacer",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-table::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-table",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-text::via:mjml-core": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-text",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml-wrapper::via:mjml-core+via:mjml-section": {
       "severity": "high",
       "project": "/backend",
       "package": "mjml-wrapper",
       "direct": false,
-      "fix": "upgrade-to mjml@5.4.1"
+      "fix": "in-range"
     },
     "/backend::mjml::GHSA-45h5-66jx-r2wf+via:mjml-cli+via:mjml-core+via:mjml-migrate+via:mjml-preset-core": {
       "severity": "high",
@@ -322,14 +273,7 @@
       "project": "/backend",
       "package": "nodemailer",
       "direct": true,
-      "fix": "upgrade-to nodemailer@10.0.10"
-    },
-    "/backend::validator::GHSA-9965-vmph-33xx+GHSA-vghf-hv5q-vc2g": {
-      "severity": "high",
-      "project": "/backend",
-      "package": "validator",
-      "direct": false,
-      "fix": "in-range"
+      "fix": "upgrade-to nodemailer@10.0.11"
     },
     "/frontend::@remix-run/router::GHSA-2j2x-hqr9-3h42+GHSA-2w69-qvjg-hvjx": {
       "severity": "high",
