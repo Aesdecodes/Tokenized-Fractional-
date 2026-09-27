@@ -283,9 +283,59 @@ To run the application with rate limiting and basic WAF/DDoS protection, you can
 nginx -c $(pwd)/nginx/nginx.conf
 ```
 
-This will start an Nginx server on `http://localhost:80` that proxies requests:
+This starts an HTTP-only Nginx server on `http://localhost:80` that proxies requests. Use it for local development; production deployments should terminate TLS as described below:
 - `/api/*` -> Backend (`http://localhost:3001`) with rate limiting (10 req/s)
 - `/*` -> Frontend (`http://localhost:5173`)
+
+### 8. Self-Hosted HTTPS with Nginx
+
+For self-hosted production deployments, use [`nginx/nginx.tls.conf`](nginx/nginx.tls.conf) instead of `nginx/nginx.conf`. The example redirects HTTP to HTTPS, keeps the Let's Encrypt HTTP-01 challenge reachable, and proxies requests to the same backend and frontend ports. Render deployments can continue to rely on Render's TLS termination.
+
+The example below assumes Ubuntu/Debian, a DNS A/AAAA record for both names pointing to this server, and inbound ports 80 and 443 allowed by the firewall. Substitute your real domain and email. Stop any system Nginx service already using these ports; only one Nginx master should listen on them.
+
+Install Nginx and Certbot, create the webroot, then start the application and the plain-HTTP config so Certbot can validate the domain:
+
+```bash
+sudo apt update
+sudo apt install nginx certbot
+sudo mkdir -p /var/www/certbot
+sudo nginx -t -c "$(pwd)/nginx/nginx.conf"
+sudo nginx -c "$(pwd)/nginx/nginx.conf"
+```
+
+Request a certificate for the domain names in the TLS config:
+
+```bash
+sudo certbot certonly --webroot -w /var/www/certbot \
+  -d example.com -d www.example.com \
+  --email admin@example.com --agree-tos --no-eff-email
+```
+
+In `nginx/nginx.tls.conf`, replace both `example.com` values in `server_name` with your domain names and update the certificate paths if your certificate's primary name differs. Then stop the HTTP-only Nginx process and start the TLS config:
+
+```bash
+HTTP_CONFIG="$(pwd)/nginx/nginx.conf"
+TLS_CONFIG="$(pwd)/nginx/nginx.tls.conf"
+sudo nginx -s quit -c "$HTTP_CONFIG"
+sudo nginx -t -c "$TLS_CONFIG"
+sudo nginx -c "$TLS_CONFIG"
+```
+
+Certbot packages enable a systemd timer (or equivalent scheduler) for `certbot renew`. Install a deploy hook so Nginx reloads only after a certificate is renewed:
+
+```bash
+TLS_CONFIG="$(pwd)/nginx/nginx.tls.conf"
+NGINX_BIN="$(command -v nginx)"
+sudo install -d /etc/letsencrypt/renewal-hooks/deploy
+sudo tee /etc/letsencrypt/renewal-hooks/deploy/reload-repo-nginx >/dev/null <<EOF
+#!/bin/sh
+$NGINX_BIN -t -c "$TLS_CONFIG" && $NGINX_BIN -s reload -c "$TLS_CONFIG"
+EOF
+sudo chmod 755 /etc/letsencrypt/renewal-hooks/deploy/reload-repo-nginx
+sudo certbot renew --dry-run
+```
+
+Keep ports 80 and 443 reachable so HTTP-01 renewal can complete. Check the renewal timer with `systemctl list-timers | grep certbot` and test future renewals with `sudo certbot renew --dry-run`.
 
 ## Smart Contract API
 
