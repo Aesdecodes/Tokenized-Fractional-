@@ -4,7 +4,7 @@
 import 'dotenv/config';
 import { validateEnv } from './env.js';
 validateEnv();
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import express from 'express';
 import { Router } from 'express';
 import multer from 'multer';
@@ -124,6 +124,67 @@ export function validateRwaBody(body) {
 
 function cacheKey(contractId) {
   return `rwa:${contractId}`;
+}
+
+// ── Conditional GET / caching helpers (issue #709) ────────────────────────────
+// Asset metadata is read-heavy and only changes on an admin write, so the
+// read-only list/detail endpoints hand out an `ETag` + `Cache-Control` and
+// answer `If-None-Match` / `If-Modified-Since` with `304 Not Modified`.
+function makeETag(source, weak = false) {
+  const hash = createHash('sha1').update(source).digest('base64url');
+  return `${weak ? 'W/' : ''}"${hash}"`;
+}
+
+/**
+ * Send a JSON payload with validators and cache directives, short-circuiting to
+ * `304` when the client's representation is still fresh.
+ */
+function sendCachedJson(req, res, payload, options = {}) {
+  const { maxAge = 60, staleWhileRevalidate = 60, etagSource, weak = false, lastModified } = options;
+  const body = JSON.stringify(payload);
+  const etag = makeETag(etagSource !== undefined ? etagSource : body, weak);
+
+  res.setHeader('ETag', etag);
+  res.setHeader('Cache-Control', `public, max-age=${maxAge}, stale-while-revalidate=${staleWhileRevalidate}`);
+  res.setHeader('Vary', 'Accept-Encoding');
+
+  let lastModifiedDate = null;
+  if (lastModified) {
+    const parsed = new Date(lastModified);
+    if (!isNaN(parsed.getTime())) {
+      lastModifiedDate = parsed;
+      res.setHeader('Last-Modified', parsed.toUTCString());
+    }
+  }
+
+  // RFC 9110: when If-None-Match is present, If-Modified-Since is ignored.
+  const ifNoneMatch = req.headers['if-none-match'];
+  if (ifNoneMatch) {
+    const tags = String(ifNoneMatch).split(',').map(t => t.trim());
+    if (tags.includes('*') || tags.includes(etag)) return res.status(304).end();
+  } else if (lastModifiedDate && req.headers['if-modified-since']) {
+    const since = new Date(req.headers['if-modified-since']);
+    if (!isNaN(since.getTime()) && lastModifiedDate <= since) return res.status(304).end();
+  }
+
+  return res.type('application/json').send(body);
+}
+
+/**
+ * The list response embeds signed pagination cursors whose signature carries a
+ * timestamp, so the raw body changes on every request. The resource itself has
+ * not changed, though — hash only the page contents and stable pagination
+ * metadata and emit a *weak* ETag, which is exactly the "semantically
+ * equivalent" contract that lets us still answer `304`.
+ */
+function sendCachedAssetList(req, res, result) {
+  const { nextCursor, prevCursor, ...pagination } = result.pagination || {};
+  return sendCachedJson(req, res, result, {
+    maxAge: 30,
+    staleWhileRevalidate: 60,
+    etagSource: JSON.stringify({ data: result.data, pagination }),
+    weak: true,
+  });
 }
 
 // ── Full-Text Search Index (Issue #181) ────────────────────────────────────────
@@ -804,7 +865,7 @@ v1.get('/rwa', (req, res) => {
     const paginationParams = parsePaginationParams(req);
     const result = applyCursorPagination(assets, paginationParams);
 
-    res.json(result);
+    sendCachedAssetList(req, res, result);
 
     // Cache the asset list result (fire-and-forget)
     cacheSet('rwa:all', result).catch(() => {});
@@ -862,7 +923,7 @@ app.get('/api/rwa', (req, res, next) => {
     const paginationParams = parsePaginationParams(req);
     const result = applyCursorPagination(assets, paginationParams);
 
-    res.json(result);
+    sendCachedAssetList(req, res, result);
 
     // Cache the asset list result (fire-and-forget)
     cacheSet('rwa:all', result).catch(() => {});
@@ -1040,7 +1101,13 @@ async function getAssetMetadata(req, res) {
   const { contractId } = req.params;
 
   const cached = await cacheGet(cacheKey(contractId));
-  if (cached) return res.json(withCdnAssetUrls(cached));
+  if (cached) {
+    return sendCachedJson(req, res, withCdnAssetUrls(cached), {
+      maxAge: 60,
+      staleWhileRevalidate: 120,
+      lastModified: cached.updatedAt || cached.createdAt,
+    });
+  }
 
   const data = loadData();
   const asset = data[contractId];
@@ -1050,7 +1117,11 @@ async function getAssetMetadata(req, res) {
   const result = { contractId, ...asset };
   // Cache individual asset (fire-and-forget)
   cacheSet(cacheKey(contractId), result).catch(() => {});
-  res.json(withCdnAssetUrls(result));
+  sendCachedJson(req, res, withCdnAssetUrls(result), {
+    maxAge: 60,
+    staleWhileRevalidate: 120,
+    lastModified: result.updatedAt || result.createdAt,
+  });
 }
 
 // Registered on both the versioned router and the legacy alias (issue #704).

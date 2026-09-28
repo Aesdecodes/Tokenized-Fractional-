@@ -7,6 +7,8 @@ const options = {
       description:
         'Backend API for managing real-world asset (RWA) metadata in the Tokenized Fractional RWA Marketplace. ' +
         'Supports listing, creating, updating, and deleting asset metadata that is linked to on-chain Soroban smart contracts.\n\n' +
+        '## Caching (conditional GETs)\n\n' +
+        '`GET /api/v1/rwa` and `GET /api/v1/rwa/{contractId}` are read-only and return an `ETag` validator (the detail endpoint also returns `Last-Modified`) together with `Cache-Control: public, max-age=30..60, stale-while-revalidate` headers. Send `If-None-Match` with the returned ETag and the server answers `304 Not Modified` while the asset is unchanged, avoiding a full re-read.\n\n' +
         '## API Versioning\n\n' +
         'All routes are available under two prefixes:\n\n' +
         '- **`/api/v1/rwa`** — versioned path (preferred, use in new integrations)\n' +
