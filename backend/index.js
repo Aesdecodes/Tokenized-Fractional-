@@ -1062,8 +1062,8 @@ v1.get('/rwa/:contractId', getAssetMetadata);
  * /api/rwa:
  *   post:
  *     tags: [Assets]
- *     summary: Create or update RWA asset metadata
- *     description: Creates a new asset metadata record or updates an existing one. Requires admin authentication. The contractId must be at least 50 characters starting with "C". Required fields: title, location, description, assetType. Invalidates Redis cache on success.
+ *     summary: Create RWA asset metadata
+ *     description: Creates a new asset metadata record. This endpoint is create-only — a POST for an existing contractId returns 409 Conflict; use PATCH /api/v1/rwa/{contractId} to update. Requires admin authentication. The contractId must be at least 50 characters starting with "C". Required fields: title, location, description, assetType. Invalidates Redis cache on success.
  *     security:
  *       - ApiKeyAuth: []
  *     requestBody:
@@ -1083,7 +1083,7 @@ v1.get('/rwa/:contractId', getAssetMetadata);
  *             documents: ['https://ipfs.io/ipfs/QmY...']
  *     responses:
  *       201:
- *         description: Asset created/updated successfully
+ *         description: Asset created successfully
  *         content:
  *           application/json:
  *             schema:
@@ -1100,6 +1100,14 @@ v1.get('/rwa/:contractId', getAssetMetadata);
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
+ *       409:
+ *         description: An asset with this contractId already exists
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *             example:
+ *               error: 'Asset with contract ID C... already exists. Use PATCH /api/v1/rwa/C... to update it.'
  *       429:
  *         description: Rate limit exceeded (write limiter)
  *         content:
@@ -1118,6 +1126,17 @@ async function createAssetMetadata(req, res) {
   if (validationError) return res.status(400).json({ error: validationError });
 
   const data = loadData();
+
+  // Issue #706: POST is create-only. Silently overwriting an existing asset by
+  // re-submitting a POST with a reused or typo'd contract ID is data loss with
+  // no warning, so reject the collision and point the caller at PATCH instead.
+  if (data[contractId]) {
+    return res.status(409).json({
+      error: `Asset with contract ID ${contractId} already exists. Use PATCH /api/v1/rwa/${contractId} to update it.`,
+      code: 'ASSET_ALREADY_EXISTS',
+    });
+  }
+
   const now = new Date().toISOString();
   data[contractId] = {
     id: metadata.id || contractId,

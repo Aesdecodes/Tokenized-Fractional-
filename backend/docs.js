@@ -162,8 +162,8 @@ const options = {
         },
         post: {
           tags: ['Assets — v1 (versioned)'],
-          summary: 'Create or update asset metadata',
-          description: 'Requires admin API key via `x-api-key` header.',
+          summary: 'Create asset metadata',
+          description: 'Create-only. A POST for an existing `contractId` returns **409 Conflict**; use `PATCH /api/v1/rwa/{contractId}` to update. Requires admin API key via `x-api-key` header.',
           security: [{ ApiKeyAuth: [] }],
           requestBody: {
             required: true,
@@ -171,11 +171,12 @@ const options = {
           },
           responses: {
             '201': {
-              description: 'Asset created or updated',
+              description: 'Asset created',
               content: { 'application/json': { schema: { $ref: '#/components/schemas/Asset' } } },
             },
             '400': { description: 'Validation error', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
             '401': { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+            '409': { description: 'An asset with this contractId already exists', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
           },
         },
       },
@@ -236,17 +237,18 @@ const options = {
         post: {
           tags: ['Assets — legacy (backward-compatible)'],
           deprecated: true,
-          summary: 'Create or update asset metadata (legacy path)',
-          description: '**Deprecated path.** Alias for `POST /api/v1/rwa`. Use `/api/v1/rwa` for new integrations.',
+          summary: 'Create asset metadata (legacy path)',
+          description: '**Deprecated path.** Alias for `POST /api/v1/rwa`. Create-only; returns **409 Conflict** for an existing `contractId`. Use `/api/v1/rwa` for new integrations.',
           security: [{ ApiKeyAuth: [] }],
           requestBody: {
             required: true,
             content: { 'application/json': { schema: { $ref: '#/components/schemas/AssetInput' } } },
           },
           responses: {
-            '201': { description: 'Asset created or updated', content: { 'application/json': { schema: { $ref: '#/components/schemas/Asset' } } } },
+            '201': { description: 'Asset created', content: { 'application/json': { schema: { $ref: '#/components/schemas/Asset' } } } },
             '400': { description: 'Validation error', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
             '401': { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+            '409': { description: 'An asset with this contractId already exists', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
           },
         },
       },
