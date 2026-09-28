@@ -7,6 +7,7 @@ validateEnv();
 import { randomUUID } from 'crypto';
 import express from 'express';
 import { Router } from 'express';
+import multer from 'multer';
 import cors from 'cors';
 import helmet from 'helmet';
 import pinoHttp from 'pino-http';
@@ -18,7 +19,11 @@ import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './docs.js';
 import yoga from './graphql/index.js';
 import { createETagMiddleware, invalidateLedger } from './graphql/etag.js';
-import { cacheGet, cacheSet, cacheDel } from './cache.js';
+import { cacheGet, cacheSet, cacheDel, buildTlsOptions } from './cache.js';
+import { withCdnAssetUrls } from './cdn.js';
+import { uploadToIPFS, getIPFSFileUrl, unpinFromIPFS } from './ipfs.js';
+import { createBatchHandler } from './src/middleware/batchHandler.js';
+import { createValidationMiddleware } from './src/middleware/validate.js';
 import { RateLimiterService } from './src/services/rateLimiterService.js';
 import { AnomalyDetector } from './src/services/anomalyDetector.js';
 import { GeoLimiter } from './src/services/geoLimiter.js';
@@ -68,6 +73,12 @@ const PORT = process.env.PORT || 3001;
 const CORS_ORIGINS = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(',').map(s => s.trim())
   : ['http://localhost:5173', 'http://localhost:4173'];
+
+// ── v1 Router ─────────────────────────────────────────────────────────────────
+// All versioned API routes (/rwa, /news, /webhooks, ...) are registered on this
+// router and mounted under both `/api/v1` (preferred) and `/api` (legacy alias),
+// so a breaking change can ship as `/api/v2` without disturbing existing clients.
+const v1 = Router();
 
 // ── Structured logging + error tracking (issue #703) ──────────────────────────
 // One pino instance for the whole process (see logger.js): newline-delimited
@@ -421,6 +432,21 @@ app.use((req, res, next) => {
   req.requestId = id;
   res.setHeader('X-Request-ID', id);
   runWithRequestContext({ requestId: id }, next);
+});
+
+// ── API versioning (issue #704) ───────────────────────────────────────────────
+// `/api/v1/*` is the supported surface going forward. `/api/*` remains as a
+// backward-compatible alias while clients migrate and advertises its own
+// deprecation (RFC 8594 `Deprecation` / `Link: rel="successor-version"`) so the
+// frontend and any tooling can detect it. See docs/api-versioning.md for the
+// full policy, compatibility guarantees and the v2 procedure.
+app.use('/api', (req, res, next) => {
+  res.setHeader('X-API-Version', '1');
+  if (!req.path.startsWith('/v1')) {
+    res.setHeader('Deprecation', 'true');
+    res.setHeader('Link', '</api/v1>; rel="successor-version"');
+  }
+  next();
 });
 
 // Issue #519: RFC 7807 problem-details interceptor — normalizes legacy error
@@ -845,6 +871,133 @@ app.get('/api/rwa', (req, res, next) => {
   }
 });
 
+// ── GET /rwa/pending — assets awaiting review (admin) ────────────────────────
+/**
+ * @openapi
+ * /api/v1/rwa/pending:
+ *   get:
+ *     tags: [Assets]
+ *     summary: List assets pending review
+ *     description: Returns every asset whose status is "pending". Admin only.
+ *     security:
+ *       - ApiKeyAuth: []
+ *     responses:
+ *       200:
+ *         description: List of pending assets
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/Asset'
+ *       401:
+ *         description: Invalid or missing API key
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
+function listPendingAssets(_req, res) {
+  const data = loadData();
+  const pending = Object.entries(data)
+    .filter(([, meta]) => meta.status === ASSET_STATUS.PENDING)
+    .map(([contractId, meta]) => withCdnAssetUrls({ contractId, ...meta }));
+  res.json(pending);
+}
+
+// ── GET /rwa/search — full-text search with relevance ranking ────────────────
+/**
+ * @openapi
+ * /api/v1/rwa/search:
+ *   get:
+ *     tags: [Assets]
+ *     summary: Full-text search across approved assets
+ *     description: Ranks approved assets by TF-IDF relevance across title, location and description, with optional faceted filters.
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Search query
+ *       - in: query
+ *         name: assetType
+ *         schema:
+ *           type: string
+ *         description: Restrict results to a single asset type
+ *       - in: query
+ *         name: location
+ *         schema:
+ *           type: string
+ *         description: Restrict results to locations containing this substring
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *     responses:
+ *       200:
+ *         description: Ranked search results
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/PaginatedAssets'
+ *       400:
+ *         description: Missing or blank `q` parameter
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
+function searchAssets(req, res) {
+  const { q, assetType, location, page, limit } = req.query;
+  if (!q || !String(q).trim()) {
+    return res.status(400).json({ error: 'Missing required query parameter: q' });
+  }
+
+  const data = loadData();
+  const approvedData = Object.fromEntries(
+    Object.entries(data).filter(([, meta]) => isApproved(meta))
+  );
+
+  buildSearchIndex(approvedData);
+  let ranked = scoreSearch(q, approvedData);
+
+  if (assetType) {
+    const lower = assetType.toLowerCase();
+    ranked = ranked.filter(r => approvedData[r.contractId]?.assetType?.toLowerCase() === lower);
+  }
+  if (location) {
+    const lower = location.toLowerCase();
+    ranked = ranked.filter(r => approvedData[r.contractId]?.location?.toLowerCase().includes(lower));
+  }
+
+  const total = ranked.length;
+  const pageNum = Math.max(1, parseInt(page) || 1);
+  const pageSize = Math.min(100, Math.max(1, parseInt(limit) || 20));
+  const totalPages = Math.ceil(total / pageSize) || 1;
+  const slice = ranked.slice((pageNum - 1) * pageSize, pageNum * pageSize);
+
+  const results = slice.map(({ contractId, score }) => ({
+    contractId,
+    ...withCdnAssetUrls(approvedData[contractId]),
+    _score: score,
+  }));
+
+  res.json({ data: results, pagination: { total, page: pageNum, limit: pageSize, totalPages } });
+}
+
+// Registered on both the versioned router and the legacy alias (issue #704).
+app.get('/api/rwa/pending', adminAuth, listPendingAssets);
+app.get('/api/rwa/search', searchAssets);
+v1.get('/rwa/pending', adminAuth, listPendingAssets);
+v1.get('/rwa/search', searchAssets);
+
 /**
  * @openapi
  * /api/rwa/{contractId}:
@@ -883,7 +1036,7 @@ app.get('/api/rwa', (req, res, next) => {
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-app.get('/api/rwa/:contractId', async (req, res) => {
+async function getAssetMetadata(req, res) {
   const { contractId } = req.params;
 
   const cached = await cacheGet(cacheKey(contractId));
@@ -898,7 +1051,11 @@ app.get('/api/rwa/:contractId', async (req, res) => {
   // Cache individual asset (fire-and-forget)
   cacheSet(cacheKey(contractId), result).catch(() => {});
   res.json(withCdnAssetUrls(result));
-});
+}
+
+// Registered on both the versioned router and the legacy alias (issue #704).
+app.get('/api/rwa/:contractId', getAssetMetadata);
+v1.get('/rwa/:contractId', getAssetMetadata);
 
 /**
  * @openapi
@@ -950,7 +1107,7 @@ app.get('/api/rwa/:contractId', async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-app.post('/api/rwa', adminAuth, writeLimiter, async (req, res) => {
+async function createAssetMetadata(req, res) {
   const { contractId, ...metadata } = req.body;
 
   if (!contractId || !validateContractId(contractId)) {
@@ -985,7 +1142,11 @@ app.post('/api/rwa', adminAuth, writeLimiter, async (req, res) => {
 
   req.log?.info({ contractId }, 'Asset created/updated');
   res.status(201).json(withCdnAssetUrls({ contractId, ...data[contractId] }));
-});
+}
+
+// Registered on both the versioned router and the legacy alias (issue #704).
+app.post('/api/rwa', adminAuth, writeLimiter, createAssetMetadata);
+v1.post('/rwa', adminAuth, writeLimiter, createAssetMetadata);
 
 /**
  * @openapi
@@ -1030,7 +1191,7 @@ app.post('/api/rwa', adminAuth, writeLimiter, async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-app.delete('/api/rwa/:contractId', adminAuth, writeLimiter, async (req, res) => {
+async function deleteAssetMetadata(req, res) {
   const { contractId } = req.params;
   const data = loadData();
   if (!data[contractId]) return res.status(404).json({ error: 'Asset metadata not found' });
@@ -1063,7 +1224,11 @@ app.delete('/api/rwa/:contractId', adminAuth, writeLimiter, async (req, res) => 
 
   req.log?.info({ contractId }, 'Asset deleted');
   res.json({ message: 'Asset metadata deleted', contractId });
-});
+}
+
+// Registered on both the versioned router and the legacy alias (issue #704).
+app.delete('/api/rwa/:contractId', adminAuth, writeLimiter, deleteAssetMetadata);
+v1.delete('/rwa/:contractId', adminAuth, writeLimiter, deleteAssetMetadata);
 
 // Cursor pagination error handler
 app.use(paginationErrorHandler);

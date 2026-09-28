@@ -217,6 +217,7 @@ const options = {
       '/api/rwa': {
         get: {
           tags: ['Assets — legacy (backward-compatible)'],
+          deprecated: true,
           summary: 'List all asset metadata (legacy path)',
           description: '**Deprecated path.** Alias for `GET /api/v1/rwa`. Use `/api/v1/rwa` for new integrations.',
           parameters: [
@@ -234,6 +235,7 @@ const options = {
         },
         post: {
           tags: ['Assets — legacy (backward-compatible)'],
+          deprecated: true,
           summary: 'Create or update asset metadata (legacy path)',
           description: '**Deprecated path.** Alias for `POST /api/v1/rwa`. Use `/api/v1/rwa` for new integrations.',
           security: [{ ApiKeyAuth: [] }],
@@ -251,6 +253,7 @@ const options = {
       '/api/rwa/pending': {
         get: {
           tags: ['Assets — legacy (backward-compatible)'],
+          deprecated: true,
           summary: 'List all pending assets (admin only, legacy path)',
           description: '**Deprecated path.** Alias for `GET /api/v1/rwa/pending`.',
           security: [{ ApiKeyAuth: [] }],
@@ -266,6 +269,7 @@ const options = {
       '/api/rwa/{contractId}': {
         get: {
           tags: ['Assets — legacy (backward-compatible)'],
+          deprecated: true,
           summary: 'Get asset metadata by contract ID (legacy path)',
           description: '**Deprecated path.** Alias for `GET /api/v1/rwa/{contractId}`. Use `/api/v1/rwa/{contractId}` for new integrations.',
           parameters: [
@@ -278,6 +282,7 @@ const options = {
         },
         delete: {
           tags: ['Assets — legacy (backward-compatible)'],
+          deprecated: true,
           summary: 'Delete asset metadata (legacy path)',
           description: '**Deprecated path.** Alias for `DELETE /api/v1/rwa/{contractId}`. Use `/api/v1/rwa/{contractId}` for new integrations.',
           security: [{ ApiKeyAuth: [] }],
@@ -416,6 +421,27 @@ const options = {
             '200': { description: 'Webhook deleted', content: { 'application/json': { schema: { type: 'object', properties: { message: { type: 'string' }, id: { type: 'string' } } } } } },
             '401': { description: 'Unauthorized', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
             '404': { description: 'Webhook not found', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
+          },
+        },
+      },
+      '/api/v1/rwa/search': {
+        get: {
+          tags: ['Assets — v1 (versioned)'],
+          summary: 'Full-text search across approved assets',
+          description: 'Ranks approved assets by TF-IDF relevance across title, location and description, with optional faceted filters.',
+          parameters: [
+            { in: 'query', name: 'q', required: true, schema: { type: 'string' }, description: 'Search query' },
+            { in: 'query', name: 'assetType', schema: { type: 'string' }, description: 'Filter by asset type (case-insensitive)' },
+            { in: 'query', name: 'location', schema: { type: 'string' }, description: 'Filter by location substring' },
+            { in: 'query', name: 'page', schema: { type: 'integer', default: 1 }, description: 'Page number' },
+            { in: 'query', name: 'limit', schema: { type: 'integer', default: 20 }, description: 'Items per page (max 100)' },
+          ],
+          responses: {
+            '200': {
+              description: 'Ranked search results',
+              content: { 'application/json': { schema: { $ref: '#/components/schemas/PaginatedAssets' } } },
+            },
+            '400': { description: 'Missing or blank q parameter', content: { 'application/json': { schema: { $ref: '#/components/schemas/Error' } } } },
           },
         },
       },
