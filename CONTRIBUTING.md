@@ -10,6 +10,9 @@ Thank you for your interest in contributing! This document outlines the process 
 - [Code Style Guidelines](#code-style-guidelines)
 - [Branch Naming Conventions](#branch-naming-conventions)
 - [Pull Request Process](#pull-request-process)
+- [Code Ownership and Review](#code-ownership-and-review)
+- [Dependency Updates](#dependency-updates)
+- [Operational Runbooks](#operational-runbooks)
 - [Local Secret Scanning](#local-secret-scanning)
 - [Testing](#testing)
 - [Internationalization (i18n)](#internationalization-i18n)
@@ -221,6 +224,70 @@ Closes #XX
 
 ## Screenshots (if applicable)
 ```
+
+---
+
+## Code Ownership and Review
+
+Some paths are reviewed by named maintainers before they can be merged, because
+the consequences of a mistake there are not caught by a test suite. If a pull
+request touches any of them, GitHub automatically requests the listed reviewer.
+
+| Area | Paths |
+|---|---|
+| Smart contracts | `contracts/` |
+| Backend auth, authorisation and secret handling | `backend/auth.js`, `backend/authMiddleware.js`, `backend/env.js`, `backend/index.js`, `backend/src/middleware/`, `backend/src/routes/` |
+| Frontend transaction construction | `frontend/src/hooks/useSoroban.js`, `frontend/src/context/FreighterWalletContext.jsx`, `frontend/src/store/useWalletStore.js` |
+| Supply-chain automation and infrastructure | `.github/dependabot.yml`, `renovate.json`, the `render.yaml` / `terraform/` / `k8s/` / `nginx/` deployment topology |
+
+The assignments live in [`.github/CODEOWNERS`](.github/CODEOWNERS); the rules,
+the ordering semantics (the **last** matching pattern wins) and the branch
+protection settings that make the approvals *required* rather than merely
+requested are documented in [docs/code-ownership.md](docs/code-ownership.md).
+
+If you are adding a path that carries financial or security risk, add a rule
+there rather than widening the default.
+
+---
+
+## Dependency Updates
+
+There is one tool per job, and it matters which is which:
+
+| Job | Tool | Configuration |
+|---|---|---|
+| Routine version bumps (npm + cargo) | Renovate | [`renovate.json`](renovate.json) |
+| Security advisories | Dependabot | [`.github/dependabot.yml`](.github/dependabot.yml) |
+| Auditing the current tree for known vulnerabilities | `check-dependency-audit.mjs`, `cargo audit` | [`.github/workflows/dependency-audit.yml`](.github/workflows/dependency-audit.yml) |
+
+Neither bot merges anything by itself. Dependency pull requests are gated on the
+`Dependency Update Gate` workflow, which fails when a manifest and its lockfile
+move out of step. The weekly review cadence, the grouping rules and what to do
+when a bump is declined are in
+[docs/dependency-updates.md](docs/dependency-updates.md).
+
+**Before hand-editing a manifest, run the install command in that directory and
+commit the regenerated lockfile in the same commit.** A pull request that bumps
+`package.json` without updating `package-lock.json` fails the gate, and that is
+the single most common dependency-PR mistake.
+
+---
+
+## Operational Runbooks
+
+Some changes are only reviewable alongside the procedure they affect. These are
+the runbooks the code refers to:
+
+| Runbook | Covers |
+|---|---|
+| [docs/disk-usage-monitoring.md](docs/disk-usage-monitoring.md) | Disk-usage thresholds, the alert signals, and the response procedure for a filling volume holding `DATA_FILE`. |
+| [docs/blue-green-deployment.md](docs/blue-green-deployment.md) | Deploying and rolling back the Render backend and static frontend. |
+| [docs/cloudwatch-incident-runbook.md](docs/cloudwatch-incident-runbook.md) | Incident triage from alarms. |
+| [docs/troubleshooting.md](docs/troubleshooting.md) | What an operator or user should check first, including the public status page. |
+
+If your change introduces a new failure mode that a human has to act on, add the
+response steps to the relevant runbook in the same pull request. An alert with
+no documented response is a page that nobody can action.
 
 ---
 
