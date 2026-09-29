@@ -4,11 +4,37 @@ This guide covers common issues you may encounter while developing, deploying, o
 
 ## Table of Contents
 
+- [Is the Problem Known? Check the Status Page](#is-the-problem-known-check-the-status-page)
 - [Build Errors](#build-errors)
 - [Deployment Failures](#deployment-failures)
 - [Connection Issues](#connection-issues)
 - [Transaction Failures](#transaction-failures)
 - [Diagnostic Commands](#diagnostic-commands)
+
+---
+
+## Is the Problem Known? Check the Status Page
+
+Before working through anything below, check whether the problem is already
+known. A public status page reports the health of the three services this app
+depends on, independently of the app itself:
+
+- the **backend API** (asset metadata and marketplace data),
+- the **web application**,
+- the **Stellar RPC** the app uses for ledger access.
+
+There is a link to it in the footer of every page, and the page itself lives in
+[`status/`](../status). It re-checks every 60 seconds.
+
+| What you see | What it means |
+|---|---|
+| Every tier operational | The problem is most likely local — continue with the sections below. |
+| Backend API degraded or down | Not your setup. Writes and reads of asset metadata may fail; wait for recovery. |
+| Stellar RPC degraded or down | Contract reads and writes will fail regardless of your wallet. Not your setup. |
+| A tier shows **Unknown** | The status page could not measure that tier. Treat it as "no information", **not** as healthy. |
+
+If the status page itself will not load, the problem is not on your side of the
+network at all — try the API's `/health` endpoint directly.
 
 ---
 

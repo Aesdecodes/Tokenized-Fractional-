@@ -51,6 +51,7 @@ import WalletSelector from './components/WalletSelector/WalletSelector';
 import NetworkMismatchBanner from './components/NetworkMismatchBanner';
 import useNetworkMismatch from './hooks/useNetworkMismatch';
 import OnboardingTour from './components/OnboardingTour';
+import Footer from './components/Footer/Footer';
 import { setQueryData, applySubscriptionDelta } from './services/queryCache';
 
 // ── Route-based code splitting (Issue #304) ──────────────────────────────────
@@ -1244,6 +1245,9 @@ function App() {
         </kbd>{' '}
         for help
       </div>
+
+      {/* ── Footer (Issue #797: link to the independent public status page) ── */}
+      <Footer />
     </div>
   );
 }
