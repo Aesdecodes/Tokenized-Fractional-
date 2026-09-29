@@ -463,12 +463,28 @@ When users buy shares, they receive **SEP-41 compliant NFT certificates** repres
 
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
 | `GET` | `/health` | No | Health check |
-| `GET` | `/api/rwa` | No | List all assets |
-| `GET` | `/api/rwa/:contractId` | No | Get asset metadata |
-| `POST` | `/api/rwa` | `x-api-key` | Create/update asset |
-| `PATCH` | `/api/rwa/:contractId` | `x-api-key` | Partial update (specific fields only) |
-| `DELETE` | `/api/rwa/:contractId` | `x-api-key` | Delete asset |
+| `GET` | `/api/v1/rwa` | No | List approved assets |
+| `GET` | `/api/v1/rwa/:contractId` | No | Get asset metadata |
+| `GET` | `/api/v1/rwa/search` | No | Full-text search (facets + relevance) |
+| `GET` | `/api/v1/rwa/pending` | `x-api-key` | List assets awaiting review |
+| `POST` | `/api/v1/rwa` | `x-api-key` | Create asset |
+| `PATCH` | `/api/v1/rwa/:contractId` | `x-api-key` | Partial update (specific fields only) |
+| `DELETE` | `/api/v1/rwa/:contractId` | `x-api-key` | Delete asset |
+
+### API Versioning
+
+All resource routes are versioned under **`/api/v1`** — use that prefix for new
+integrations. The unversioned `/api/*` paths remain as a backward-compatible
+alias of `/api/v1` and return `Deprecation: true` plus a
+`Link: </api/v1>; rel="successor-version"` header; every API response carries
+`X-API-Version: 1`. Infrastructure endpoints (`/health`, `/metrics`,
+`/api-docs*`, `/api/batch`) are intentionally unversioned.
+
+See **[docs/api-versioning.md](docs/api-versioning.md)** for the compatibility
+guarantees, the deprecation process, and the procedure for introducing `v2`.
 
 Interactive API documentation is available at [`/api-docs`](http://localhost:3001/api-docs) (Swagger UI) and [`/api-docs.json`](http://localhost:3001/api-docs.json) (raw OpenAPI spec) when the backend is running.
 
