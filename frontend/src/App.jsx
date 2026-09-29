@@ -1,21 +1,19 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback, lazy, Suspense } from 'react';
-import { Routes, Route, useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { Networks, nativeToScVal } from '@stellar/stellar-sdk';
 import { useTranslation } from 'react-i18next';
 
-import Header from './components/Header/Header';
-import Navbar from './components/Navbar/Navbar';
 import Card from './components/Card/Card';
 import Alert from './components/Alert/Alert';
 import NetworkBadge from './components/NetworkBadge/NetworkBadge';
 import Button from './components/Button/Button';
 import Skeleton from './components/Skeleton/Skeleton';
+import Input from './components/Input/Input';
 import AssetGrid from './components/AssetGrid/AssetGrid';
 import BuyShares from './components/BuyShares/BuyShares';
 import ToastContainer from './components/Toast/Toast';
 import ConfirmPurchase from './components/ConfirmPurchase/ConfirmPurchase';
 import LanguageSwitcher from './components/LanguageSwitcher/LanguageSwitcher';
-import TransactionHistory from './components/TransactionHistory/TransactionHistory';
 import ProfilePage from './components/ProfilePage/ProfilePage';
 import styles from './App.module.css';
 import Breadcrumbs from './components/Breadcrumbs/Breadcrumbs';
@@ -49,6 +47,14 @@ import WalletSelector from './components/WalletSelector/WalletSelector';
 import NetworkMismatchBanner from './components/NetworkMismatchBanner';
 import useNetworkMismatch from './hooks/useNetworkMismatch';
 import OnboardingTour from './components/OnboardingTour';
+import WalletAddressBadge from './components/WalletAddressBadge/WalletAddressBadge';
+import ContractVerificationBanner from './components/ContractVerificationBanner/ContractVerificationBanner';
+import PreferencesPanel from './components/PreferencesPanel/PreferencesPanel';
+import OptimizedImage from './components/OptimizedImage/OptimizedImage';
+import VirtualTour from './components/VirtualTour/VirtualTour';
+import ShortcutHelpModal from './components/ShortcutHelp/ShortcutHelp';
+import Spinner from './components/Spinner/Spinner';
+import useContractManifest from './hooks/useContractManifest';
 import { setQueryData, applySubscriptionDelta } from './services/queryCache';
 
 // ── Route-based code splitting (Issue #304) ──────────────────────────────────
@@ -125,6 +131,8 @@ const MarketplacePage = React.memo(
     loadingBuy,
     handleBuyShares,
     pricePerShare,
+    hasNextPage,
+    fetchNextPage,
   }) => {
     const isTestnet = NETWORK_PASSPHRASE === Networks.TESTNET;
     return (
@@ -289,6 +297,15 @@ function App() {
     checkNow: recheckNetwork,
   } = useNetworkMismatch({ enabled: Boolean(publicKey) });
 
+  // ── Official contract deployment check (Issue #792) ─────────────────────────
+  // Cross-check the build-time contract address against the signed canonical
+  // manifest so a misconfigured or tampered build warns the user instead of
+  // silently signing against an unexpected contract.
+  const contractVerification = useContractManifest({
+    contractId: CONTRACT_ID,
+    network: NETWORK_PASSPHRASE,
+  });
+
   const {
     assets,
     assetMeta,
@@ -318,6 +335,9 @@ function App() {
 
   const { theme, toggleTheme } = useTheme();
   const [view, setView] = useState('marketplace');
+  // Issue #791/#793: wallet manager modal and the persisted preferences panel.
+  const [walletManagerOpen, setWalletManagerOpen] = useState(false);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
 
   // ── WebSocket for real-time updates (Issues #425, #426) ─────────────────────
   const wsUrl = `ws://${new URL(API_URL).host}/ws`;
@@ -418,7 +438,6 @@ function App() {
   );
 
   // ── Keyboard shortcuts (Issue #194) ─────────────────────────────────────────
-  const [view, setView] = useState('marketplace');
   const [shortcutHelpOpen, setShortcutHelpOpen] = useState(false);
 
   useKeyboardShortcuts({
@@ -440,6 +459,13 @@ function App() {
       setConfirmPending(false);
     },
   });
+
+  // On-chain price per share. Read before the confirmation effect below, which
+  // lists it as a dependency — reading it later in the body would hit the TDZ.
+  const { data: priceData } = useSorobanRead('get_price', [], {
+    skip: CONTRACT_ID.length < 50,
+  });
+  const pricePerShare = priceData?.retval ? Number(priceData.retval.u64()) : null;
 
   // Track purchase details for WebSocket broadcast
   const lastPurchaseRef = useRef({ amount: null, timestamp: null });
@@ -509,9 +535,6 @@ function App() {
 
   const buySharesTx = useSorobanWrite('buy_shares');
   const loadingBuy = buySharesTx.loading;
-
-  const { data: priceData, loading: loadingPrice } = useSorobanRead('get_price', [], { skip: CONTRACT_ID.length < 50 });
-  const pricePerShare = priceData?.retval ? Number(priceData.retval.u64()) : null;
 
   const { data: availableSharesData } = useSorobanRead('get_available_shares', [], {
     skip: CONTRACT_ID.length < 50,
@@ -734,20 +757,12 @@ function App() {
               connecting={isConnecting}
             />
           ) : (
-            <div className={styles.walletInfo}>
-              {/* Clicking public key re-opens WalletManager */}
-              <button
-                className={styles.publicKey}
-                title={`${publicKey} — click to manage wallet`}
-                onClick={() => setWalletManagerOpen(true)}
-                aria-label="Manage wallet connection"
-              >
-                {publicKey.slice(0, 8)}…{publicKey.slice(-6)}
-              </button>
-              <Button onClick={disconnectWallet} variant="danger">
-                {t('wallet.disconnect')}
-              </Button>
-            </div>
+            <WalletAddressBadge
+              publicKey={publicKey}
+              onManage={() => setWalletManagerOpen(true)}
+              onDisconnect={disconnectWallet}
+              disconnectLabel={t('wallet.disconnect')}
+            />
           )}
         </div>
       </header>
@@ -760,11 +775,19 @@ function App() {
         onRetry={recheckNetwork}
       />
 
+      {/* ── Official contract deployment warning (Issue #792) ───────────────── */}
+      <ContractVerificationBanner
+        status={contractVerification.status}
+        reason={contractVerification.reason}
+        configuredContractId={contractVerification.contractId}
+        manifestUrl={contractVerification.manifestUrl}
+      />
+
       {/* ── Tab Navigation ──────────────────────────────────────────────────── */}
       <nav className={styles.tabs}>
         <button
           className={`${styles.tab} ${view === 'marketplace' || view === 'asset-detail' ? styles.tabActive : ''}`}
-          onClick={() => { setView('marketplace'); setSelectedAsset(null); }}
+          onClick={() => setView('marketplace')}
         >
           {t('nav.marketplace')}
         </button>
@@ -799,6 +822,12 @@ function App() {
           onClick={() => setView('profile')}
         >
           Profile
+        </button>
+        <button
+          className={`${styles.tab} ${preferencesOpen ? styles.tabActive : ''}`}
+          onClick={() => setPreferencesOpen(true)}
+        >
+          Preferences
         </button>
       </nav>
 
@@ -1048,7 +1077,6 @@ function App() {
             </ErrorBoundary>
           </>
         )}
-      </Suspense>
 
       {confirmPending && (
         <ConfirmPurchase
@@ -1059,6 +1087,14 @@ function App() {
           loading={loadingBuy}
         />
       )}
+
+      {/* Wallet manager modal (Issue #791) */}
+      <Suspense fallback={null}>
+        <WalletManager isOpen={walletManagerOpen} onClose={() => setWalletManagerOpen(false)} />
+      </Suspense>
+
+      {/* Preferences panel (Issue #793) */}
+      <PreferencesPanel open={preferencesOpen} onClose={() => setPreferencesOpen(false)} />
 
       {/* Keyboard shortcut help modal (Issue #194: Ctrl+/) */}
       <ShortcutHelpModal open={shortcutHelpOpen} onClose={() => setShortcutHelpOpen(false)} />

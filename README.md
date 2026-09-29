@@ -104,6 +104,8 @@ graph TB
 - [Performance Benchmarks](docs/performance.md) — Gas costs, API latency, frontend metrics
 - [CDN Configuration](docs/cdn.md) — Serve frontend assets and uploaded media through Cloudflare
 - [Troubleshooting Guide](docs/troubleshooting.md) — Common issues and solutions
+- [Incident Response Playbook](docs/incident-response.md) — One coordinated sequence across the contract, backend, and DNS/CDN tiers
+- [Contract Address Verification](docs/contract-address-verification.md) — The signed canonical manifest of official contract addresses and how the frontend checks it
 - [Multi-Region Deployment](docs/multi-region-deployment.md) — Deployment strategy and failover
 - [Kubernetes Deployment](docs/kubernetes-deployment.md) — Kubernetes manifests, scaling, and self-healing
 - [Deploying Your Own Instance](docs/deploying-your-own-instance.md) — Checklist for forks running an independent, rebranded production deployment (distinct from local development setup)
