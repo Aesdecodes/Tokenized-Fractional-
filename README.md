@@ -274,6 +274,33 @@ DATA_FILE=data.json
 # ASSET_CDN_URL=https://assets-cdn.example.com
 ```
 
+#### Environment variables
+
+The backend validates its environment **at startup** (`backend/env.js`) and exits
+with a clear error listing every problem if a required value is missing or
+invalid — it never silently falls back to a development default. Validation is
+skipped only when `NODE_ENV=test` so the test suite can run without a full
+production environment. Secret values are redacted from the error output.
+
+| Variable | Required | Validation | Notes |
+| --- | --- | --- | --- |
+| `ADMIN_API_KEY` | ✅ | non-empty, **≥ 16 characters** | Secret. Guards all write endpoints. |
+| `CORS_ORIGINS` | ✅ | comma-separated; each entry a valid `http(s)` origin or `*` | No default fallback. |
+| `DATA_FILE` | ✅ | relative path ending in `.json`, no `..` | Asset store. `data.json` in production. |
+| `PORT` | | integer `1–65535` | Default `3001`. |
+| `NODE_ENV` | | `development` \| `test` \| `production` \| `staging` | Default `development`. |
+| `LOG_LEVEL` | | `trace` \| `debug` \| `info` \| `warn` \| `error` \| `fatal` \| `silent` | Default `info`. |
+| `WEBHOOK_DATA_FILE` | | relative `.json` path, no `..` | Default `webhooks.json`. |
+| `CACHE_TTL_SECONDS` | | positive integer | Redis cache TTL. |
+| `REDIS_URL` | | `redis://` or `rediss://` | Secret. Enables the Redis cache + distributed rate limiting. |
+| `PINATA_JWT` | | non-empty | Secret. IPFS document uploads. |
+| `PINATA_GATEWAY` | | `http(s)` URL | Default `https://gateway.pinata.cloud`. |
+| `CDN_URL` | | `http(s)` URL | Base URL for relative asset paths. |
+| `SENTRY_DSN` | | `http(s)` URL | Secret. Error tracking (logs only when unset). |
+
+Run `cp backend/.env.example backend/.env` and fill in the required values, or
+set them in your deployment dashboard (see [`render.yaml`](./render.yaml)).
+
 ### 6. Run the Application
 
 ```bash
@@ -438,12 +465,28 @@ When users buy shares, they receive **SEP-41 compliant NFT certificates** repres
 
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
 | `GET` | `/health` | No | Health check |
-| `GET` | `/api/rwa` | No | List all assets |
-| `GET` | `/api/rwa/:contractId` | No | Get asset metadata |
-| `POST` | `/api/rwa` | `x-api-key` | Create/update asset |
-| `PATCH` | `/api/rwa/:contractId` | `x-api-key` | Partial update (specific fields only) |
-| `DELETE` | `/api/rwa/:contractId` | `x-api-key` | Delete asset |
+| `GET` | `/api/v1/rwa` | No | List approved assets |
+| `GET` | `/api/v1/rwa/:contractId` | No | Get asset metadata |
+| `GET` | `/api/v1/rwa/search` | No | Full-text search (facets + relevance) |
+| `GET` | `/api/v1/rwa/pending` | `x-api-key` | List assets awaiting review |
+| `POST` | `/api/v1/rwa` | `x-api-key` | Create asset |
+| `PATCH` | `/api/v1/rwa/:contractId` | `x-api-key` | Partial update (specific fields only) |
+| `DELETE` | `/api/v1/rwa/:contractId` | `x-api-key` | Delete asset |
+
+### API Versioning
+
+All resource routes are versioned under **`/api/v1`** — use that prefix for new
+integrations. The unversioned `/api/*` paths remain as a backward-compatible
+alias of `/api/v1` and return `Deprecation: true` plus a
+`Link: </api/v1>; rel="successor-version"` header; every API response carries
+`X-API-Version: 1`. Infrastructure endpoints (`/health`, `/metrics`,
+`/api-docs*`, `/api/batch`) are intentionally unversioned.
+
+See **[docs/api-versioning.md](docs/api-versioning.md)** for the compatibility
+guarantees, the deprecation process, and the procedure for introducing `v2`.
 
 Interactive API documentation is available at [`/api-docs`](http://localhost:3001/api-docs) (Swagger UI) and [`/api-docs.json`](http://localhost:3001/api-docs.json) (raw OpenAPI spec) when the backend is running.
 
