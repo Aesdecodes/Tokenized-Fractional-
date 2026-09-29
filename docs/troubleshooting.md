@@ -9,7 +9,9 @@ This guide covers common issues you may encounter while developing, deploying, o
 - [Deployment Failures](#deployment-failures)
 - [Connection Issues](#connection-issues)
 - [Transaction Failures](#transaction-failures)
+- [Contract Address Verification Warning](#contract-address-verification-warning)
 - [Diagnostic Commands](#diagnostic-commands)
+- [Incident Response](#incident-response)
 
 ---
 
@@ -396,6 +398,38 @@ echo "VITE_CONTRACT_ID: $VITE_CONTRACT_ID"
 echo "VITE_RPC_URL: $VITE_RPC_URL"
 echo "VITE_API_URL: $VITE_API_URL"
 ```
+
+---
+
+## Contract Address Verification Warning
+
+**Problem**: The app shows a warning banner saying the configured contract is
+not officially recognised, or that the official manifest could not be verified.
+
+**Cause**: The build's `VITE_CONTRACT_ID` is not present in the signed canonical
+manifest at `/official-contracts.json`, or that manifest could not be fetched and
+its signature verified.
+
+**Solution**:
+1. Confirm the contract address you intend to use and add it to
+   `frontend/contract-manifest/official-contracts.payload.json`.
+2. Re-sign the manifest (`node frontend/scripts/sign-contract-manifest.mjs sign ...`)
+   and redeploy it with the frontend.
+3. If you are running a fork with your own contracts, set
+   `VITE_CONTRACT_MANIFEST_URL` and `VITE_CONTRACT_MANIFEST_SIGNERS` to publish
+   and trust your own manifest.
+
+See [Contract Address Verification](./contract-address-verification.md)
+for the full workflow.
+
+---
+
+## Incident Response
+
+For a live, cross-tier production incident (contract, backend, and DNS/CDN),
+follow the single ordered
+[Incident Response Playbook](./incident-response.md) rather than working
+the tiers independently.
 
 ---
 
