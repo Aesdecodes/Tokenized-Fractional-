@@ -272,6 +272,33 @@ DATA_FILE=data.json
 # ASSET_CDN_URL=https://assets-cdn.example.com
 ```
 
+#### Environment variables
+
+The backend validates its environment **at startup** (`backend/env.js`) and exits
+with a clear error listing every problem if a required value is missing or
+invalid — it never silently falls back to a development default. Validation is
+skipped only when `NODE_ENV=test` so the test suite can run without a full
+production environment. Secret values are redacted from the error output.
+
+| Variable | Required | Validation | Notes |
+| --- | --- | --- | --- |
+| `ADMIN_API_KEY` | ✅ | non-empty, **≥ 16 characters** | Secret. Guards all write endpoints. |
+| `CORS_ORIGINS` | ✅ | comma-separated; each entry a valid `http(s)` origin or `*` | No default fallback. |
+| `DATA_FILE` | ✅ | relative path ending in `.json`, no `..` | Asset store. `data.json` in production. |
+| `PORT` | | integer `1–65535` | Default `3001`. |
+| `NODE_ENV` | | `development` \| `test` \| `production` \| `staging` | Default `development`. |
+| `LOG_LEVEL` | | `trace` \| `debug` \| `info` \| `warn` \| `error` \| `fatal` \| `silent` | Default `info`. |
+| `WEBHOOK_DATA_FILE` | | relative `.json` path, no `..` | Default `webhooks.json`. |
+| `CACHE_TTL_SECONDS` | | positive integer | Redis cache TTL. |
+| `REDIS_URL` | | `redis://` or `rediss://` | Secret. Enables the Redis cache + distributed rate limiting. |
+| `PINATA_JWT` | | non-empty | Secret. IPFS document uploads. |
+| `PINATA_GATEWAY` | | `http(s)` URL | Default `https://gateway.pinata.cloud`. |
+| `CDN_URL` | | `http(s)` URL | Base URL for relative asset paths. |
+| `SENTRY_DSN` | | `http(s)` URL | Secret. Error tracking (logs only when unset). |
+
+Run `cp backend/.env.example backend/.env` and fill in the required values, or
+set them in your deployment dashboard (see [`render.yaml`](./render.yaml)).
+
 ### 6. Run the Application
 
 ```bash
