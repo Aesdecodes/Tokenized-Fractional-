@@ -2100,3 +2100,12 @@ if (process.env.NODE_ENV !== 'test') {
   wsManager.initialize(httpServer);
   wsManager.connectRedisAdapter();
 }
+if (require.main === module) {
+  const PORT = process.env.PORT || 3001;
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+  });
+}
+
+// Export the app for testing and OpenAPI verification
+module.exports = app;
