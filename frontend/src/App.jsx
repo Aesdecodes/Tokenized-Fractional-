@@ -35,6 +35,7 @@ import {
 import { toToastError } from './lib/errorMapper';
 import { useAssetStore } from './store/useAssetStore';
 import { useToastStore } from './store/useToastStore';
+import { useFavoritesStore } from './store/useFavoritesStore';
 import { useSorobanRead, useSorobanWrite } from './hooks/useSoroban';
 import useTransactionStatus from './hooks/useTransactionStatus';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
@@ -396,6 +397,13 @@ function App() {
     reconnectDelay: 3000,
     onEvent: handleSubscriptionEvent,
   });
+
+  // ── Favorites follow the connected wallet (Issue #905) ──────────────────────
+  // Merges any anonymous favorites into the wallet's list on connect; see
+  // useFavoritesStore for the full guest/wallet policy.
+  useEffect(() => {
+    useFavoritesStore.getState().setActiveWallet(publicKey || null);
+  }, [publicKey]);
 
   // ── Wallet Discovery (Issue #424) ────────────────────────────────────────────
   const { providers } = useWalletDiscovery();
