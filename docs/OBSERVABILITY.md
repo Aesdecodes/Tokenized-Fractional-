@@ -326,7 +326,8 @@ cluster.
 Prometheus metrics are exposed on `GET /metrics`
 (`src/services/metricsService.js`): `http_request_duration_seconds`,
 `http_requests_total`, `http_request_errors_total`,
-`websocket_active_connections`, `db_pool_*`. They answer "is the service
+`websocket_active_connections`, `websocket_dlq_*` (see
+[WEBSOCKET_DLQ.md](WEBSOCKET_DLQ.md)), `db_pool_*`. They answer "is the service
 healthy" at a glance and are the right signal for autoscaling; logs answer "why
 did this particular request fail". Grafana dashboards live in `grafana/`.
 
