@@ -126,6 +126,8 @@ graph TB
 - [Infrastructure Inventory & IaC Boundary](docs/infrastructure.md) — What is managed by `render.yaml` / Terraform, what is still provisioned by hand, and how to apply the database
 - [Architecture Decision Records (ADRs)](docs/adr/README.md) — Technical decisions and rationale
 - [Security Policy & Audit Status](SECURITY.md) — Vulnerability reporting, current smart-contract audit status, mainnet risk disclaimer, and re-audit policy
+- [Asset Admission and Trust Review](docs/asset-admission-and-trust.md) — Issuer and asset checks, approval gates, user disclosures, and ongoing review expectations
+- [Stellar and Soroban Glossary](docs/stellar-glossary.md) — Plain-language definitions and official documentation links for common ecosystem terms
 - [Security Best Practices Guide](docs/security.md) — Security guidelines, audit checklist, and incident response
 - [Observability Guide](docs/OBSERVABILITY.md) — Structured logging, request IDs, secret redaction, Sentry alerting, and the ELK log pipeline
 - [Performance Benchmarks](docs/performance.md) — Gas costs, API latency, frontend metrics
