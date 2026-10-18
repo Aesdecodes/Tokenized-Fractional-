@@ -29,7 +29,8 @@
     "docs:generate": "node scripts/generate-docs.js",
     "docs:serve": "node scripts/generate-docs.js && echo \"Docs generated in docs/api/\"",
     "docs:verify-examples": "node scripts/verify-readme-examples.js",
-    "test:openapi": "node scripts/verify-openapi.js"
+    "test:openapi": "node scripts/verify-openapi.js",
+    "check:unmounted-routes": "node scripts/check-unmounted-routes.js"
   },
   "jest": {
     "testEnvironment": "node",

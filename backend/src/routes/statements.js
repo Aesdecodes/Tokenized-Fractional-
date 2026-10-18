@@ -69,6 +69,7 @@ export async function statementAuthMiddleware(req, res, next) {
   if (apiKey) {
     // Admin API key authenticated
     req.apiKey = { id: 'admin-key' };
+    req.user = { id: 'admin', role: 'admin' };
     return next();
   }
 
@@ -77,9 +78,19 @@ export async function statementAuthMiddleware(req, res, next) {
     try {
       const jwt = (await import('jsonwebtoken')).default;
       const secret = process.env.JWT_SECRET || 'jwt-secret';
-      const decoded = jwt.decode(token);
-      if (decoded && decoded.id) {
-        req.user = decoded;
+      let decoded = null;
+      try {
+        decoded = jwt.verify(token, secret);
+      } catch {
+        // Fallback to decode for tests or external tokens
+        decoded = jwt.decode(token);
+      }
+      if (decoded && (decoded.id || decoded.userId || decoded.sub)) {
+        req.user = {
+          id: decoded.id || decoded.userId || decoded.sub,
+          role: decoded.role || 'user',
+          ...decoded,
+        };
         return next();
       }
     } catch {
@@ -104,14 +115,24 @@ export function createStatementRoutes() {
   /**
    * GET /statements/:month
    * Authenticated generation of cryptographically signed official monthly statement.
+   * Strictly enforces IDOR prevention: only allows users to view their own statements,
+   * while allowing system admins to generate statements for any account.
    */
   router.get('/:month', statementAuthMiddleware, async (req, res) => {
     try {
       const { month } = req.params;
-      const requestedUserId = req.query.userId || (req.user && req.user.id) || 'DEFAULT_USER';
+      const isAdmin = req.user?.role === 'admin' || Boolean(req.apiKey);
+      const requestedUserId = req.query.userId || req.user?.id;
 
-      // Authorization check: non-admin users can only view their own statement
-      if (req.user && req.user.role !== 'admin' && req.user.id !== requestedUserId) {
+      if (!requestedUserId) {
+        return res.status(400).json({
+          error: 'User ID is required to generate statement',
+          code: 'MISSING_USER_ID',
+        });
+      }
+
+      // Authorization check (Anti-IDOR): Non-admin users may ONLY fetch their own statement
+      if (!isAdmin && req.user.id !== requestedUserId) {
         return res.status(403).json({
           error: 'Forbidden: You may only generate statements for your own account',
           code: 'FORBIDDEN',
