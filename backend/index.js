@@ -52,6 +52,7 @@ import {
   reportError,
 } from './src/services/errorTracking.js';
 import { wsManager } from './websocket.js';
+import { parseWebhookUrl, postWebhook } from './src/utils/safeWebhookRequest.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // multer memoryStorage keeps the file in memory as a Buffer (req.file.buffer).
@@ -376,9 +377,9 @@ function saveWebhooks(data) {
 function validateWebhookBody(body) {
   if (!body.url || typeof body.url !== 'string') return 'url is required';
   try {
-    new URL(body.url);
-  } catch {
-    return 'url must be a valid URL';
+    parseWebhookUrl(body.url);
+  } catch (err) {
+    return err.message;
   }
   if (!Array.isArray(body.events) || body.events.length === 0) {
     return 'events must be a non-empty array';
@@ -402,11 +403,9 @@ async function deliverToWebhook(webhook, payload) {
     'X-Webhook-Delivery': randomUUID(),
   };
 
-  const response = await fetch(webhook.url, {
-    method: 'POST',
+  const response = await postWebhook(webhook.url, {
     headers,
     body,
-    signal: AbortSignal.timeout(5000),
   });
 
   if (!response.ok) {
