@@ -81,6 +81,7 @@ import { createFlashLoanProtectionRoutes } from './routes/flashLoanProtection.js
 import { createGraphQLPlaygroundSecurityMiddleware } from '../graphql.js';
 import { createApiMonitoringRoutes } from './routes/apiMonitoring.js';
 import { createIPAccessRoutes } from './routes/ipAccess.js';
+import { createStatementRoutes } from './routes/statements.js';
 import { requestLogger } from './middleware/requestLogger.js';
 import {
   createProblemDetailsInterceptor,
@@ -486,6 +487,11 @@ app.use('/api/flash-loan-protection', (req, res, next) => {
 const apiMonitoringRoutes = createApiMonitoringRoutes();
 app.use('/api/v1/api-monitor', apiMonitoringRoutes);
 app.use('/api/api-monitor', apiMonitoringRoutes);
+
+// Mount Statement routes (Issue #910)
+const statementsRoutes = createStatementRoutes();
+app.use('/api/v1/statements', statementsRoutes);
+app.use('/api/statements', statementsRoutes);
 
 // SQL Injection Guard routes are mounted inside initializeApp() below
 // so they use the fully initialized adminAuth middleware
