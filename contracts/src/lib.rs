@@ -7,7 +7,7 @@ use soroban_sdk::{
     Address, Bytes, BytesN, Env, String, Vec,
 };
 
-// ── SIP-4 / SEP-46 Contract Metadata ─────────────────────────────────
+// â”€â”€ SIP-4 / SEP-46 Contract Metadata â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Off-chain tools (explorers, wallets, indexers) read these entries from
 // the Wasm custom section `contractmetav0` without executing the contract.
 contractmeta!(key = "name", val = "RWA Marketplace");
@@ -25,7 +25,7 @@ pub trait NftContractInterface {
     fn mint_certificate(env: Env, to: Address) -> u32;
 }
 
-/// Issue #169 – Minimal oracle interface.
+/// Issue #169 â€“ Minimal oracle interface.
 /// The oracle contract must expose a `get_price() -> i128` function
 /// that returns the current asset price per share in the payment token's
 /// smallest unit. This is intentionally minimal to support any Stellar-based
@@ -65,7 +65,7 @@ pub enum DataKey {
     SellOrder(u64),
     NextOrderId,
     MaxSharesPerUser,
-    /// Allowance(owner, spender) → approved amount
+    /// Allowance(owner, spender) â†’ approved amount
     Allowance(Address, Address),
     BuybackConfig,
     BuybackBudget,
@@ -96,7 +96,7 @@ pub enum DataKey {
     /// Compliance whitelist for transfers
     TransferWhitelist(Address),
 
-    // ── Issue #494: additional storage keys used throughout the contract ──
+    // â”€â”€ Issue #494: additional storage keys used throughout the contract â”€â”€
     /// Contract metadata (name, version, description)
     ContractMetadata,
     /// Oracle contract address
@@ -158,6 +158,25 @@ pub enum DataKey {
     DistributionSnapshot(Address),
     /// Issue #765: accrued but unclaimed distribution amount for a holder.
     DistributionPending(Address),
+
+    /// Issue #766: permanent wind-down (end-of-life) flag. Set by
+    /// `wind_down()` together with `Paused`; once closed the marketplace
+    /// can no longer be re-opened and every purchase path is rejected.
+    IsClosed,
+    /// Issue #767: global lock-up period in seconds applied to purchases.
+    /// Absent or 0 means purchases are not subject to a lock-up.
+    LockupPeriod,
+    /// Issue #767: ledger timestamp at which `Address`'s balance becomes
+    /// transferable/redeemable. Written on purchase while a lock-up is
+    /// configured.
+    UnlockAt(Address),
+    /// Issue #768: address holding the Pauser role (pause/unpause).
+    PauserRole,
+    /// Issue #768: address holding the Treasury role (emergency withdrawals).
+    TreasuryRole,
+    /// Issue #768: address holding the MetadataManager role (NFT/metadata
+    /// configuration).
+    MetadataManagerRole,
 }
 
 #[contracttype]
@@ -189,14 +208,33 @@ pub struct VestingClaimRecord {
     pub timestamp: u64,
 }
 
+/// Issue #769: structured semantic-version triple. Compared component-wise so
+/// off-chain clients can enforce a minimum supported contract version without
+/// parsing the human-readable `version` string.
+#[contracttype]
+#[derive(Clone)]
+pub struct SemVer {
+    pub major: u32,
+    pub minor: u32,
+    pub patch: u32,
+}
+
 /// SIP-4 contract metadata returned at runtime by get_contract_metadata()
 #[contracttype]
 #[derive(Clone)]
 pub struct ContractMetadata {
     pub name: String,
     pub version: String,
+    /// Issue #769: structured semantically-versioned contract version.
+    pub contract_version: SemVer,
     pub description: String,
 }
+
+/// Issue #769: canonical contract version, kept in lock-step between the
+/// human-readable `version` string, the structured `contract_version` triple
+/// and the compile-time `contractmeta!` entry. Bump all three together.
+const CONTRACT_VERSION_STRING: &str = "0.4.0";
+const CONTRACT_SEMVER: SemVer = SemVer { major: 0, minor: 4, patch: 0 };
 
 #[contracttype]
 #[derive(Clone)]
@@ -302,7 +340,7 @@ pub struct WhitelistInfo {
     pub tier: u32,
 }
 
-// ── Issue #494: Additional struct definitions for missing DataKey variants ──
+// â”€â”€ Issue #494: Additional struct definitions for missing DataKey variants â”€â”€
 
 #[contracttype]
 #[derive(Clone)]
@@ -505,6 +543,28 @@ pub struct EventEmergencyWithdraw {
     pub amount: i128,
 }
 
+/// Emitted when an admin assigns one of the duty-separated roles (Issue #768).
+#[contractevent(data_format = "vec")]
+pub struct EventRoleAssigned {
+    pub role: String,
+    pub holder: Address,
+}
+
+/// Emitted when the marketplace is permanently wound down (Issue #766).
+#[contractevent(data_format = "vec")]
+pub struct EventWindDown {
+    pub admin: Address,
+    pub timestamp: u64,
+}
+
+/// Emitted when shares are burned by the admin (Issue #766).
+#[contractevent(data_format = "vec")]
+pub struct EventSharesBurned {
+    pub admin: Address,
+    pub from: Address,
+    pub amount: u32,
+}
+
 #[contractevent(data_format = "vec")]
 pub struct EventSetDividendSchedule {
     amount_per_share: i128,
@@ -600,7 +660,7 @@ pub struct EventSetMaxSharesPerUser {
     new_max: u32,
 }
 
-// ── Issue #274: Purchase Limit Events ────────────────────────────────────────
+// â”€â”€ Issue #274: Purchase Limit Events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[contractevent(data_format = "vec")]
 pub struct EventPurchaseLimitConfigSet {
@@ -652,7 +712,7 @@ pub struct EventApproval {
 }
 
 
-// ── Vesting Events ────────────────────────────────────────────────────────
+// â”€â”€ Vesting Events â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[contractevent(data_format = "vec")]
 pub struct EventVestingScheduleCreated {
@@ -677,7 +737,7 @@ pub struct EventVestingAccelerated {
 }
 
 
-// ── OVERFLOW-SAFE MATH HELPERS ──────────────────────────────────────
+// â”€â”€ OVERFLOW-SAFE MATH HELPERS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 /// Safely add two i128 values, panicking on overflow
 fn checked_add_i128(a: i128, b: i128) -> i128 {
     a.checked_add(b).unwrap_or_else(|| panic!("Arithmetic overflow: cannot add {} + {}", a, b))
@@ -703,7 +763,76 @@ fn checked_sub_u32(a: u32, b: u32) -> u32 {
     a.checked_sub(b).unwrap_or_else(|| panic!("Arithmetic underflow: cannot subtract {} from {}", b, a))
 }
 
-// ── Issue #765: pull-based income distribution accumulator ───────────────
+// â”€â”€ Issue #768: role helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+/// Resolve a role's address, falling back to the admin when the role has not
+/// been explicitly assigned (e.g. a contract initialized before #768).
+fn _get_role(env: &Env, key: DataKey) -> Address {
+    env.storage().instance().get(&key).unwrap_or_else(|| {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("Contract not initialized: admin")
+    })
+}
+
+/// Require authorization from the holder of the role stored under `role_key`
+/// and return that address. Duty separation is enforced here: only the
+/// address recorded for the role can authorize the call.
+fn _require_role(env: &Env, role_key: DataKey) -> Address {
+    let role_holder = _get_role(env, role_key);
+    role_holder.require_auth();
+    role_holder
+}
+
+// â”€â”€ Issue #767: lock-up helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+/// The globally configured lock-up period in seconds (0 = disabled).
+fn _lockup_period(env: &Env) -> u64 {
+    env.storage().instance().get(&DataKey::LockupPeriod).unwrap_or(0)
+}
+
+/// Record (or extend) the lock-up for `holder` after a purchase. A no-op when
+/// no lock-up period is configured. An existing, later unlock timestamp is
+/// preserved so a subsequent purchase never shortens an outstanding lock.
+fn _apply_lockup(env: &Env, holder: &Address) {
+    let period = _lockup_period(env);
+    if period == 0 {
+        return;
+    }
+    let candidate = env.ledger().timestamp().saturating_add(period);
+    let existing: u64 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::UnlockAt(holder.clone()))
+        .unwrap_or(0);
+    let unlock_at = if candidate > existing { candidate } else { existing };
+    env.storage()
+        .persistent()
+        .set(&DataKey::UnlockAt(holder.clone()), &unlock_at);
+}
+
+/// Panic if `holder`'s balance is still within its lock-up window.
+fn _require_unlocked(env: &Env, holder: &Address) {
+    let unlock_at: u64 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::UnlockAt(holder.clone()))
+        .unwrap_or(0);
+    if env.ledger().timestamp() < unlock_at {
+        panic!("Shares are locked until ledger timestamp {}", unlock_at);
+    }
+}
+
+/// Read `holder`'s current unlock timestamp (0 = not locked).
+fn _unlock_at(env: &Env, holder: &Address) -> u64 {
+    env.storage()
+        .persistent()
+        .get(&DataKey::UnlockAt(holder.clone()))
+        .unwrap_or(0)
+}
+
+// â”€â”€ Issue #765: pull-based income distribution accumulator â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Fixed-point scale for the distribution accumulator: token units per
 /// share, scaled by 1e9 so small distributions still accrue per share.
@@ -802,7 +931,7 @@ fn _assert_no_outstanding_unclaimed(env: &Env, token: &Address) {
     }
 }
 
-// ── Whitelist / dividend storage helpers ─────────────────────────────────
+// â”€â”€ Whitelist / dividend storage helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Composite whitelist status for an address (flag, expiry, tier).
 fn _get_whitelist_info(env: &Env, addr: &Address) -> WhitelistInfo {
@@ -979,7 +1108,7 @@ fn check_vesting_restrictions(env: &Env, owner: &Address, amount: u32) {
     }
 }
 
-// ── Issue #310: Function pause constants and helpers ────────────────────
+// â”€â”€ Issue #310: Function pause constants and helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const FN_BUY_SHARES: u32 = 0;
 const FN_TRANSFER: u32 = 1;
@@ -1005,7 +1134,7 @@ fn _set_function_paused(env: &Env, function_id: u32, paused: bool) {
     env.storage().instance().set(&DataKey::FunctionPauseFlags, &flags);
 }
 
-// ── Issue #311: Circuit breaker helpers ─────────────────────────────────
+// â”€â”€ Issue #311: Circuit breaker helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Check if the circuit breaker has been triggered.
 fn _is_circuit_breaker_triggered(env: &Env) -> bool {
@@ -1019,7 +1148,7 @@ fn _require_circuit_breaker_clear(env: &Env) {
     }
 }
 
-// ── Issue #700: Opt-in allowlist gate ──────────────────────────────────
+// â”€â”€ Issue #700: Opt-in allowlist gate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Whether the buyer allowlist is enforced on `buy_shares`.
 ///
@@ -1035,7 +1164,7 @@ fn _is_allowlist_enabled(env: &Env) -> bool {
         .unwrap_or(true)
 }
 
-// ── Issue #270: Whitelist validation ───────────────────────────────────
+// â”€â”€ Issue #270: Whitelist validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Validate that an address is whitelisted and not expired.
 fn _validate_whitelist(env: &Env, addr: &Address) {
@@ -1052,7 +1181,7 @@ fn _validate_whitelist(env: &Env, addr: &Address) {
     }
 }
 
-// ── Issue #268: Oracle-aware price helper ──────────────────────────────
+// â”€â”€ Issue #268: Oracle-aware price helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Get the current price per share. Uses the oracle if configured,
 /// otherwise falls back to the static PricePerShare.
@@ -1064,7 +1193,7 @@ fn _get_current_price(env: &Env) -> i128 {
     env.storage().instance().get(&DataKey::PricePerShare).unwrap_or(0)
 }
 
-// ── Issue #274: Purchase limit validation ──────────────────────────────
+// â”€â”€ Issue #274: Purchase limit validation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 /// Validate purchase limits for a buyer. Returns the updated purchase history.
 /// Panics if any limit is exceeded.
@@ -1174,7 +1303,20 @@ fn _update_purchase_history(env: &Env, buyer: &Address, history: UserPurchaseHis
 
 #[contractimpl]
 impl RwaMarketplace {
-    pub fn init(env: Env, admin: Address, payment_token: Address, price: i128, total_shares: u32) {
+    /// Initialize the marketplace configuration.
+    ///
+    /// `lockup_period` (Issue #767) is optional: when `Some(seconds)` every
+    /// purchase records an unlock timestamp of `now + seconds` on the buyer's
+    /// balance, and that balance cannot be transferred or redeemed until the
+    /// timestamp passes. `None` disables lock-ups.
+    pub fn init(
+        env: Env,
+        admin: Address,
+        payment_token: Address,
+        price: i128,
+        total_shares: u32,
+        lockup_period: Option<u64>,
+    ) {
         admin.require_auth();
 
         if env.storage().instance().has(&DataKey::Admin) {
@@ -1189,6 +1331,14 @@ impl RwaMarketplace {
             panic!("Total shares must be greater than zero");
         }
 
+        // Issue #767: an explicitly supplied lock-up period must be positive;
+        // `None` disables lock-ups entirely.
+        if let Some(period) = lockup_period {
+            if period == 0 {
+                panic!("Lockup period must be positive");
+            }
+        }
+
         // Issue #636: Validate payment_token is a deployed token contract
         let token_client = token::TokenClient::new(&env, &payment_token);
         token_client.symbol();
@@ -1199,6 +1349,18 @@ impl RwaMarketplace {
         env.storage().instance().set(&DataKey::TotalShares, &total_shares);
         env.storage().instance().set(&DataKey::AvailableShares, &total_shares);
         env.storage().instance().set(&DataKey::Paused, &false);
+        // Issue #766: a freshly initialized marketplace is open for business.
+        env.storage().instance().set(&DataKey::IsClosed, &false);
+
+        // Issue #767: persist the optional lock-up period.
+        env.storage().instance().set(&DataKey::LockupPeriod, &lockup_period.unwrap_or(0u64));
+
+        // Issue #768: roles default to the admin address so an existing
+        // single-key deployment keeps working unchanged. Duty separation is
+        // opt-in via `set_pauser` / `set_treasury` / `set_metadata_manager`.
+        env.storage().instance().set(&DataKey::PauserRole, &admin);
+        env.storage().instance().set(&DataKey::TreasuryRole, &admin);
+        env.storage().instance().set(&DataKey::MetadataManagerRole, &admin);
 
         // Initialize implementation version for upgradeable proxy pattern (Issue #309)
         env.storage().instance().set(&DataKey::ImplementationVersion, &1u32);
@@ -1215,7 +1377,8 @@ impl RwaMarketplace {
         // Store SIP-4 metadata
         let metadata = ContractMetadata {
             name: String::from_str(&env, "RWA Marketplace"),
-            version: String::from_str(&env, "0.4.0"),
+            version: String::from_str(&env, CONTRACT_VERSION_STRING),
+            contract_version: CONTRACT_SEMVER,
             description: String::from_str(&env, "Tokenized Fractional RWA Marketplace"),
         };
         env.storage().instance().set(&DataKey::ContractMetadata, &metadata);
@@ -1241,6 +1404,13 @@ impl RwaMarketplace {
             panic!("Purchases are currently paused");
         }
 
+        // Issue #766: a wound-down marketplace rejects all purchases, even if
+        // it is later unpaused.
+        if env.storage().instance().get(&DataKey::IsClosed).unwrap_or(false) {
+            _set_non_reentrant(&env, false);
+            panic!("Marketplace is closed");
+        }
+
         // Issue #311: Check circuit breaker
         _require_circuit_breaker_clear(&env);
 
@@ -1257,7 +1427,7 @@ impl RwaMarketplace {
         // Issue #268: Oracle-aware price (reusable helper)
         let price: i128 = _get_current_price(&env);
 
-        // Issue #635: Slippage protection — reject if price exceeds caller's max
+        // Issue #635: Slippage protection â€” reject if price exceeds caller's max
         if let Some(max_price) = max_price_per_share {
             if price > max_price {
                 _set_non_reentrant(&env, false);
@@ -1339,6 +1509,9 @@ impl RwaMarketplace {
         // Register as new holder only on first purchase or if not registered yet
         Self::register_holder(&env, buyer.clone());
 
+        // Issue #767: apply (or extend) the buyer's lock-up window.
+        _apply_lockup(&env, &buyer);
+
         // Mint share-certificate NFTs per share purchased (if NFT contract is configured).
         // Use optimized batch minting for gas efficiency
         if let Some(nft_addr) = env
@@ -1363,9 +1536,8 @@ impl RwaMarketplace {
     /// Set (or update) the share-certificate NFT contract address. Admin only.
     /// Once set, every `buy_shares` call mints one NFT per share to the buyer.
     pub fn set_nft_contract(env: Env, nft_contract: Address) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin)
-            .expect("Contract not initialized: admin");
-        admin.require_auth();
+        // Issue #768: gated by the MetadataManager role (defaults to admin).
+        _require_role(&env, DataKey::MetadataManagerRole);
         env.storage().instance().set(&DataKey::NftContract, &nft_contract);
         EventNftContractSet { nft_contract }.publish(&env);
     }
@@ -1373,6 +1545,19 @@ impl RwaMarketplace {
     /// Return the configured NFT contract address, or None if not set.
     pub fn get_nft_contract(env: Env) -> Option<Address> {
         env.storage().instance().get(&DataKey::NftContract)
+    }
+
+    // â”€â”€ Issue #767: lock-up views â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    /// Return the globally configured lock-up period in seconds (0 = disabled).
+    pub fn get_lockup_period(env: Env) -> u64 {
+        _lockup_period(&env)
+    }
+
+    /// Return the ledger timestamp at which `user`'s balance unlocks
+    /// (0 when the balance is not locked).
+    pub fn get_unlock_at(env: Env, user: Address) -> u64 {
+        _unlock_at(&env, &user)
     }
 
     pub fn add_to_whitelist(env: Env, addr: Address) {
@@ -1866,7 +2051,7 @@ impl RwaMarketplace {
         _load_dividend_history(&env).len() as u32
     }
 
-    // ── Issue #765: Pull-based income / dividend distribution ─────────────
+    // â”€â”€ Issue #765: Pull-based income / dividend distribution â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Deposit `amount` of the payment token as income generated by the
     /// underlying asset for pro-rata distribution to current shareholders.
@@ -2079,6 +2264,12 @@ impl RwaMarketplace {
             panic!("Marketplace is paused");
         }
 
+        // Issue #766: a wound-down marketplace rejects all purchases.
+        if env.storage().instance().get(&DataKey::IsClosed).unwrap_or(false) {
+            _set_non_reentrant(&env, false);
+            panic!("Marketplace is closed");
+        }
+
         if shares == 0 {
             _set_non_reentrant(&env, false);
             panic!("Must purchase at least 1 share");
@@ -2213,7 +2404,7 @@ impl RwaMarketplace {
         locked
     }
 
-    // ── Vesting Analytics & History ────────────────────────────────────
+    // â”€â”€ Vesting Analytics & History â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Return a comprehensive vesting summary for an address.
     /// Includes total vested, total claimed, total locked, claimable now, and schedule count.
@@ -2487,22 +2678,134 @@ impl RwaMarketplace {
     }
 
     pub fn pause(env: Env) {
-        let admin: Address = env.storage().instance().get(&DataKey::Admin)
-            .expect("Contract not initialized: admin");
-        admin.require_auth();
+        // Issue #768: gated by the Pauser role (defaults to the admin).
+        let pauser = _require_role(&env, DataKey::PauserRole);
         env.storage().instance().set(&DataKey::Paused, &true);
-        EventPause { admin }.publish(&env);
+        EventPause { admin: pauser }.publish(&env);
     }
 
     pub fn unpause(env: Env) {
+        // Issue #768: gated by the Pauser role (defaults to the admin).
+        let pauser = _require_role(&env, DataKey::PauserRole);
+        env.storage().instance().set(&DataKey::Paused, &false);
+        EventUnpause { admin: pauser }.publish(&env);
+    }
+
+    // â”€â”€ Issue #768: role management â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    /// Assign the Pauser role to `pauser`. Admin only.
+    ///
+    /// The Pauser may `pause`/`unpause` the marketplace. Assigning a distinct
+    /// address removes that power from the admin key.
+    pub fn set_pauser(env: Env, pauser: Address) {
         let admin: Address = env.storage().instance().get(&DataKey::Admin)
             .expect("Contract not initialized: admin");
         admin.require_auth();
-        env.storage().instance().set(&DataKey::Paused, &false);
-        EventUnpause { admin }.publish(&env);
+        env.storage().instance().set(&DataKey::PauserRole, &pauser);
+        EventRoleAssigned { role: String::from_str(&env, "pauser"), holder: pauser }.publish(&env);
     }
 
-    // ── Issue #570: Emergency Asset Delisting ─────────────────────────────
+    /// Assign the Treasury role to `treasury`. Admin only.
+    ///
+    /// The Treasury may call `emergency_withdraw`. Assigning a distinct address
+    /// removes that power from the admin key.
+    pub fn set_treasury(env: Env, treasury: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin)
+            .expect("Contract not initialized: admin");
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::TreasuryRole, &treasury);
+        EventRoleAssigned { role: String::from_str(&env, "treasury"), holder: treasury }.publish(&env);
+    }
+
+    /// Assign the MetadataManager role to `manager`. Admin only.
+    ///
+    /// The MetadataManager may configure metadata-affecting addresses such as
+    /// the share-certificate NFT contract.
+    pub fn set_metadata_manager(env: Env, manager: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin)
+            .expect("Contract not initialized: admin");
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::MetadataManagerRole, &manager);
+        EventRoleAssigned { role: String::from_str(&env, "metadata_manager"), holder: manager }.publish(&env);
+    }
+
+    /// Return the current Pauser role address.
+    pub fn get_pauser(env: Env) -> Address {
+        _get_role(&env, DataKey::PauserRole)
+    }
+
+    /// Return the current Treasury role address.
+    pub fn get_treasury(env: Env) -> Address {
+        _get_role(&env, DataKey::TreasuryRole)
+    }
+
+    /// Return the current MetadataManager role address.
+    pub fn get_metadata_manager(env: Env) -> Address {
+        _get_role(&env, DataKey::MetadataManagerRole)
+    }
+
+    // â”€â”€ Issue #766: end-of-life (wind-down) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+
+    /// Check whether the marketplace has been permanently wound down.
+    pub fn is_closed(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::IsClosed)
+            .unwrap_or(false)
+    }
+
+    /// Permanently wind the marketplace down. Admin only.
+    ///
+    /// Sets the global pause flag **and** a permanent `IsClosed` flag. While
+    /// closed, every purchase entry point (`buy_shares`, `buy_vested_shares`,
+    /// `batch_buy_shares`, `buy_from_order`) is rejected even if the
+    /// marketplace is later unpaused. Existing holders can still transfer and
+    /// redeem their shares, and the admin can `burn_shares` remaining supply.
+    pub fn wind_down(env: Env) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin)
+            .expect("Contract not initialized: admin");
+        admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Paused, &true);
+        env.storage().instance().set(&DataKey::IsClosed, &true);
+
+        EventWindDown { admin, timestamp: env.ledger().timestamp() }.publish(&env);
+    }
+
+    /// Burn `amount` shares held by `from`. Admin only.
+    ///
+    /// Used during wind-down to retire any remaining inventory and to claw
+    /// back shares from a holder (e.g. a compliance action). `from` must hold
+    /// at least `amount` shares. The burned shares are not returned to the
+    /// `AvailableShares` pool; total issued supply is reduced irreversibly.
+    pub fn burn_shares(env: Env, from: Address, amount: u32) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin)
+            .expect("Contract not initialized: admin");
+        admin.require_auth();
+
+        if amount == 0 {
+            panic!("Burn amount must be positive");
+        }
+
+        let balance: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Balance(from.clone()))
+            .unwrap_or(0);
+        if amount > balance {
+            panic!("Insufficient shares to burn");
+        }
+
+        // Issue #765: settle accrued distribution on the pre-burn balance.
+        _settle_distribution(&env, &from);
+        env.storage()
+            .persistent()
+            .set(&DataKey::Balance(from.clone()), &checked_sub_u32(balance, amount));
+
+        EventSharesBurned { admin, from, amount }.publish(&env);
+    }
+
+    // â”€â”€ Issue #570: Emergency Asset Delisting â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Check whether the asset has been permanently delisted.
     pub fn is_delisted(env: Env) -> bool {
@@ -2573,9 +2876,9 @@ impl RwaMarketplace {
 
     pub fn emergency_withdraw(env: Env, to: Address, amount: i128) {
         _check_non_reentrant(&env);
-        let admin: Address = env.storage().instance().get(&DataKey::Admin)
-            .expect("Contract not initialized: admin");
-        admin.require_auth();
+        // Issue #768: gated by the Treasury role (defaults to the admin). The
+        // Pauser/Admin keys cannot withdraw unless they also hold Treasury.
+        let treasury = _require_role(&env, DataKey::TreasuryRole);
 
         let token_id: Address = env
             .storage()
@@ -2587,10 +2890,10 @@ impl RwaMarketplace {
         client.transfer(&env.current_contract_address(), &to, &amount);
 
         _set_non_reentrant(&env, false);
-        EventEmergencyWithdraw { admin, to, amount }.publish(&env);
+        EventEmergencyWithdraw { admin: treasury, to, amount }.publish(&env);
     }
 
-    // ── Issue #309: Upgradeable Proxy Pattern ──────────────────────────────
+    // â”€â”€ Issue #309: Upgradeable Proxy Pattern â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Schedule an upgrade to a new implementation Wasm. Requires admin auth.
     /// The upgrade can only execute after the timelock period has elapsed.
@@ -2729,7 +3032,7 @@ impl RwaMarketplace {
             .has(&DataKey::PendingUpgrade)
     }
 
-    // ── Issue #310: Granular Pause Controls ────────────────────────────────
+    // â”€â”€ Issue #310: Granular Pause Controls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Pause a specific function category. Requires admin auth.
     /// function_id: 0=buy, 1=transfer, 2=dividend, 3=sell_order, 4=buyback, 5=transfer_from
@@ -2782,7 +3085,7 @@ impl RwaMarketplace {
             .unwrap_or(0)
     }
 
-    // ── Issue #311: Emergency Stop / Circuit Breaker ───────────────────────
+    // â”€â”€ Issue #311: Emergency Stop / Circuit Breaker â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Configure the circuit breaker. Only admin.
     pub fn configure_circuit_breaker(
@@ -2894,7 +3197,7 @@ impl RwaMarketplace {
             .unwrap_or(0)
     }
 
-    // ── Issue #312: State Recovery Functions ───────────────────────────────
+    // â”€â”€ Issue #312: State Recovery Functions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Enable or disable state recovery snapshotting. Only admin.
     pub fn set_recovery_enabled(env: Env, enabled: bool) {
@@ -3262,7 +3565,7 @@ impl RwaMarketplace {
             .unwrap_or(0)
     }
 
-    // ── Issue #274: Purchase Limit Configuration ─────────────────────────────
+    // â”€â”€ Issue #274: Purchase Limit Configuration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Set comprehensive purchase limits. Admin only.
     /// All limits of 0 mean no limit for that category.
@@ -3485,7 +3788,7 @@ impl RwaMarketplace {
             .unwrap_or(0)
     }
 
-    // ── Issue #263: Transfer fee configuration ─────────────────────────
+    // â”€â”€ Issue #263: Transfer fee configuration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Configure the transfer fee in basis points and the collector address. Admin only.
     /// E.g. `fee_bps` = 30 means 0.30% fee on each `transfer_shares_from`.
@@ -3519,7 +3822,7 @@ impl RwaMarketplace {
         (fee_bps, collector)
     }
 
-    // ── Share Transfer (secondary market) ──────────────────────────────────
+    // â”€â”€ Share Transfer (secondary market) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Approve `spender` to transfer up to `amount` of the caller's shares.
     pub fn approve(env: Env, owner: Address, spender: Address, amount: u32) {
@@ -3579,6 +3882,9 @@ impl RwaMarketplace {
 
         // Check vesting restrictions
         check_vesting_restrictions(&env, &from, amount);
+
+        // Issue #767: locked-up balances cannot be transferred.
+        _require_unlocked(&env, &from);
 
         // Check transfer restrictions
         check_transfer_restrictions(&env, &from, amount);
@@ -3687,6 +3993,9 @@ impl RwaMarketplace {
         // Check vesting restrictions
         check_vesting_restrictions(&env, &from, amount);
 
+        // Issue #767: locked-up balances cannot be transferred.
+        _require_unlocked(&env, &from);
+
         // Check transfer restrictions
         check_transfer_restrictions(&env, &from, amount);
 
@@ -3766,6 +4075,10 @@ impl RwaMarketplace {
         // Issue #311: Check circuit breaker
         _require_circuit_breaker_clear(&env);
 
+        // Issue #767: a locked-up holder cannot escrow shares into the order
+        // book (that would be a lock-up bypass via a private sale).
+        _require_unlocked(&env, &seller);
+
         if amount == 0 {
             panic!("Order amount must be positive");
         }
@@ -3837,6 +4150,12 @@ impl RwaMarketplace {
             panic!("Purchases are currently paused");
         }
 
+        // Issue #766: a wound-down marketplace rejects all purchases.
+        if env.storage().instance().get(&DataKey::IsClosed).unwrap_or(false) {
+            _set_non_reentrant(&env, false);
+            panic!("Marketplace is closed");
+        }
+
         if amount == 0 {
             _set_non_reentrant(&env, false);
             panic!("Purchase amount must be positive");
@@ -3872,6 +4191,9 @@ impl RwaMarketplace {
             .set(&DataKey::Balance(buyer.clone()), &checked_add_u32(buyer_balance, amount));
         Self::register_holder(&env, buyer.clone());
 
+        // Issue #767: apply (or extend) the buyer's lock-up window.
+        _apply_lockup(&env, &buyer);
+
         order.amount = checked_sub_u32(order.amount, amount);
         if order.amount == 0 {
             env.storage().persistent().remove(&DataKey::SellOrder(order_id));
@@ -3891,7 +4213,7 @@ impl RwaMarketplace {
         env.storage().persistent().get(&DataKey::SellOrder(order_id))
     }
 
-    // ── Secure Transfer Functions ───────────────────────────────────────────
+    // â”€â”€ Secure Transfer Functions â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Set transfer fee configuration. Admin only.
     pub fn set_transfer_fee_config(env: Env, fee_bps: u32, fee_recipient: Address, max_fee: i128) {
@@ -3963,6 +4285,9 @@ impl RwaMarketplace {
 
         // Check vesting restrictions
         check_vesting_restrictions(&env, &from, total_amount);
+
+        // Issue #767: a locked-up sender cannot move shares.
+        _require_unlocked(&env, &from);
 
         // Check transfer restrictions
         check_transfer_restrictions(&env, &from, total_amount);
@@ -4124,7 +4449,7 @@ impl RwaMarketplace {
         env.storage().instance().get(&DataKey::TransferHistoryIndex).unwrap_or(0)
     }
 
-    // ── Buyback ────────────────────────────────────────────────────────────
+    // â”€â”€ Buyback â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Contract buys back `amount` shares from `seller` at the current
     /// `price_per_share`. The contract must hold sufficient payment-token
@@ -4145,6 +4470,9 @@ impl RwaMarketplace {
             _set_non_reentrant(&env, false);
             panic!("Buybacks are currently paused");
         }
+
+        // Issue #767: locked-up shares cannot be redeemed while locked.
+        _require_unlocked(&env, &seller);
 
         if amount == 0 {
             _set_non_reentrant(&env, false);
@@ -4294,7 +4622,7 @@ impl RwaMarketplace {
         env.storage().instance().get(&DataKey::BuybackConfig)
     }
 
-    // ── Issue #268: User-initiated buyback requests ────────────────────
+    // â”€â”€ Issue #268: User-initiated buyback requests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Submit a buyback request for the admin to process. Caller must be a
     /// share holder. This records the request on-chain with a unique ID.
@@ -4347,7 +4675,7 @@ impl RwaMarketplace {
             .get(&DataKey::BuybackRequest(request_id))
     }
 
-    // ── Issue #262: Batch Share Purchase ─────────────────────────────────
+    // â”€â”€ Issue #262: Batch Share Purchase â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Maximum number of purchase requests allowed in a single batch.
     /// Prevents excessive gas consumption and keeps transactions bounded.
@@ -4361,8 +4689,8 @@ impl RwaMarketplace {
     /// without aborting the entire batch (partial fulfillment).
     ///
     /// # Arguments
-    /// * `buyer` – The address purchasing shares (must authorize).
-    /// * `requests` – A vector of `BatchPurchaseRequest` items.
+    /// * `buyer` â€“ The address purchasing shares (must authorize).
+    /// * `requests` â€“ A vector of `BatchPurchaseRequest` items.
     ///
     /// # Returns
     /// A vector of `BatchPurchaseResult` with per-item outcomes.
@@ -4378,13 +4706,19 @@ impl RwaMarketplace {
     ) -> Vec<BatchPurchaseResult> {
         buyer.require_auth();
 
-        // ── Re-entrancy guard ────────────────────────────────────────
+        // â”€â”€ Re-entrancy guard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         _check_non_reentrant(&env);
 
-        // ── Shared validations (done once for all items) ─────────────
+        // â”€â”€ Shared validations (done once for all items) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         if env.storage().instance().get(&DataKey::Paused).unwrap_or(false) {
             _set_non_reentrant(&env, false);
             panic!("Marketplace is paused");
+        }
+
+        // Issue #766: a wound-down marketplace rejects all purchases.
+        if env.storage().instance().get(&DataKey::IsClosed).unwrap_or(false) {
+            _set_non_reentrant(&env, false);
+            panic!("Marketplace is closed");
         }
 
         if !Self::is_whitelisted(env.clone(), buyer.clone()) {
@@ -4402,7 +4736,7 @@ impl RwaMarketplace {
             panic!("Batch size exceeds maximum allowed");
         }
 
-        // ── Shared state reads (amortised across batch) ──────────────
+        // â”€â”€ Shared state reads (amortised across batch) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         let admin: Address = env
             .storage()
             .instance()
@@ -4458,7 +4792,7 @@ impl RwaMarketplace {
             .get(&DataKey::Balance(buyer.clone()))
             .unwrap_or(0);
 
-        // ── Process each item ────────────────────────────────────────
+        // â”€â”€ Process each item â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         let mut results: Vec<BatchPurchaseResult> = Vec::new(&env);
         let mut aggregate_shares: u32 = 0;
         let mut aggregate_cost: i128 = 0;
@@ -4548,7 +4882,7 @@ impl RwaMarketplace {
                 continue;
             }
 
-            // ── Execute the purchase ─────────────────────────────────
+            // â”€â”€ Execute the purchase â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
             let item_cost = checked_mul_i128(price, req.shares as i128);
 
             let client = token::TokenClient::new(&env, &req.payment_token);
@@ -4581,7 +4915,7 @@ impl RwaMarketplace {
             });
         }
 
-        // ── Persist aggregated state changes ─────────────────────────
+        // â”€â”€ Persist aggregated state changes â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         // Issue #765: settle the buyer's accrued distribution on the balance
         // they held before the batch of purchases.
         _settle_distribution(&env, &buyer);
@@ -4594,9 +4928,11 @@ impl RwaMarketplace {
 
         if aggregate_shares > 0 {
             Self::register_holder(&env, buyer.clone());
+            // Issue #767: apply (or extend) the buyer's lock-up window.
+            _apply_lockup(&env, &buyer);
         }
 
-        // ── Clear reentrancy guard and emit summary event ────────────
+        // â”€â”€ Clear reentrancy guard and emit summary event â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
         _set_non_reentrant(&env, false);
 
         EventBatchBuyShares {
@@ -4775,13 +5111,13 @@ mod test {
         token::StellarAssetClient::new(&te.env, &te.token_id).mint(to, &amount);
     }
 
-    // ── Existing tests (unchanged) ──────────────────────────────────────
+    // â”€â”€ Existing tests (unchanged) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_init_and_query() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         assert_eq!(c.get_total_shares(), 1000);
         assert_eq!(c.get_available_shares(), 1000);
@@ -4790,7 +5126,7 @@ mod test {
         assert_eq!(c.get_shares(&te.admin), 0);
     }
 
-    // ── Issue #701: public get_admin() view ─────────────────────────────
+    // â”€â”€ Issue #701: public get_admin() view â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     //
     // The admin is stored in instance storage and used for every auth check,
     // so auditors and off-chain tooling need a public view of who currently
@@ -4800,7 +5136,7 @@ mod test {
     fn test_get_admin_returns_init_admin() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         assert_eq!(c.get_admin(), te.admin);
     }
@@ -4813,13 +5149,13 @@ mod test {
         c.get_admin();
     }
 
-    // ── Issue #638: Two-step admin transfer tests ───────────────────────
+    // â”€â”€ Issue #638: Two-step admin transfer tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_transfer_admin_sets_pending() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         let new_admin = Address::generate(&te.env);
         c.transfer_admin(&new_admin);
         assert_eq!(c.get_pending_admin(), Some(new_admin));
@@ -4831,7 +5167,7 @@ mod test {
     fn test_accept_admin_completes_transfer() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         let new_admin = Address::generate(&te.env);
         c.transfer_admin(&new_admin);
         c.accept_admin();
@@ -4844,7 +5180,7 @@ mod test {
     fn test_accept_admin_without_transfer_panics() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.accept_admin();
     }
 
@@ -4853,7 +5189,7 @@ mod test {
     fn test_old_admin_loses_privileges_after_transfer() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         let new_admin = Address::generate(&te.env);
         c.transfer_admin(&new_admin);
         c.accept_admin();
@@ -4866,7 +5202,7 @@ mod test {
     fn test_buy_shares_requires_whitelist() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100000);
         c.buy_shares(&te.buyer, &25, &te.token_id, &None);
     }
@@ -4875,7 +5211,7 @@ mod test {
     fn test_whitelist_admin_can_add_and_buy() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100000);
 
         assert!(!c.is_whitelisted(&te.buyer));
@@ -4892,7 +5228,7 @@ mod test {
     fn test_remove_from_whitelist_blocks_buy() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100000);
 
         c.add_to_whitelist(&te.buyer);
@@ -4903,13 +5239,13 @@ mod test {
         c.buy_shares(&te.buyer, &25, &te.token_id, &None);
     }
 
-    // ── Issue #700: opt-in allowlist ─────────────────────────────────────
+    // â”€â”€ Issue #700: opt-in allowlist â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_allowlist_enforced_by_default() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         // Deployments that never call the setter must keep the pre-#700
         // behavior of enforcing the allowlist.
@@ -4920,7 +5256,7 @@ mod test {
     fn test_allowlist_disabled_permits_unlisted_buyer() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100000);
 
         assert!(!c.is_whitelisted(&te.buyer));
@@ -4936,7 +5272,7 @@ mod test {
     fn test_allowlist_reenabled_blocks_unlisted_buyer() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100000);
 
         c.set_allowlist_enabled(&false);
@@ -4951,7 +5287,7 @@ mod test {
     fn test_allowlist_alias_add_and_remove() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100000);
 
         // The *_allowlist names must drive the same storage as *_whitelist.
@@ -4971,7 +5307,7 @@ mod test {
     fn test_allowlist_respected_by_whitelist_named_api() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100000);
 
         // An address added via the legacy name is still honored by the gate.
@@ -4985,7 +5321,7 @@ mod test {
     fn test_multiple_buys() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100000);
         c.add_to_whitelist(&te.buyer);
 
@@ -4999,7 +5335,7 @@ mod test {
     fn test_pause_unpause() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         assert!(!c.is_paused());
         c.pause();
@@ -5013,7 +5349,7 @@ mod test {
     fn test_buy_when_paused() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.pause();
         c.buy_shares(&te.buyer, &1, &te.token_id, &None);
     }
@@ -5023,8 +5359,8 @@ mod test {
     fn test_double_init() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
     }
 
     #[test]
@@ -5032,7 +5368,7 @@ mod test {
     fn test_init_zero_price() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &0, &1000);
+        c.init(&te.admin, &te.token_id, &0, &1000, &None);
     }
 
     #[test]
@@ -5040,7 +5376,7 @@ mod test {
     fn test_init_negative_price() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &-50, &1000);
+        c.init(&te.admin, &te.token_id, &-50, &1000, &None);
     }
 
     #[test]
@@ -5048,7 +5384,7 @@ mod test {
     fn test_init_zero_total_shares() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &0);
+        c.init(&te.admin, &te.token_id, &100, &0, &None);
     }
 
     #[test]
@@ -5057,7 +5393,7 @@ mod test {
         let te = setup();
         let c = client(&te);
         let bogus = Address::generate(&te.env);
-        c.init(&te.admin, &bogus, &100, &1000);
+        c.init(&te.admin, &bogus, &100, &1000, &None);
     }
 
     #[test]
@@ -5065,7 +5401,7 @@ mod test {
     fn test_overbuy() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &10);
+        c.init(&te.admin, &te.token_id, &100, &10, &None);
         c.add_to_whitelist(&te.buyer);
         mint(&te, &te.buyer, 100000);
         c.add_to_whitelist(&te.buyer);
@@ -5077,7 +5413,7 @@ mod test {
     fn test_zero_shares() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &0, &te.token_id, &None);
     }
@@ -5086,17 +5422,17 @@ mod test {
     fn test_emergency_withdraw() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.emergency_withdraw(&te.admin, &0);
     }
 
-    // ── New tests for holder registry and distribute_dividends ──────────
+    // â”€â”€ New tests for holder registry and distribute_dividends â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_holders_registered_on_buy() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -5106,7 +5442,7 @@ mod test {
         c.buy_shares(&te.buyer, &10, &te.token_id, &None);
         assert_eq!(c.get_holders().len(), 1);
 
-        // Second buy by same buyer — should NOT add duplicate
+        // Second buy by same buyer â€” should NOT add duplicate
         c.buy_shares(&te.buyer, &5, &te.token_id, &None);
         assert_eq!(c.get_holders().len(), 1);
     }
@@ -5115,7 +5451,7 @@ mod test {
     fn test_multiple_holders_registered() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         let buyer2 = Address::generate(&te.env);
         mint(&te, &te.buyer, 100_000);
@@ -5133,7 +5469,7 @@ mod test {
     fn test_distribute_dividends_single_holder() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -5145,7 +5481,7 @@ mod test {
 
         c.distribute_dividends(&te.token_id, &dividend_amount);
 
-        // buyer has 500/1000 shares → receives 5000
+        // buyer has 500/1000 shares â†’ receives 5000
         let token_client = token::TokenClient::new(&te.env, &te.token_id);
         // buyer started with 100_000, paid 500*100=50_000, receives 5_000
         assert_eq!(token_client.balance(&te.buyer), 100_000 - 50_000 + 5_000);
@@ -5155,7 +5491,7 @@ mod test {
     fn test_distribute_dividends_multiple_holders() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         let buyer2 = Address::generate(&te.env);
         mint(&te, &te.buyer, 100_000);
@@ -5190,7 +5526,7 @@ mod test {
     fn test_distribute_cleans_up_zero_balance_holders() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         let buyer2 = Address::generate(&te.env);
         mint(&te, &te.buyer, 100_000);
@@ -5214,7 +5550,7 @@ mod test {
         mint(&te, &te.contract_id, dividend_amount);
         c.distribute_dividends(&te.token_id, &dividend_amount);
 
-        // buyer had 0 shares — removed from registry
+        // buyer had 0 shares â€” removed from registry
         assert_eq!(c.get_holders().len(), 1);
     }
 
@@ -5222,7 +5558,7 @@ mod test {
     fn test_dividend_policy_withholding_and_claims() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         let buyer2 = Address::generate(&te.env);
         mint(&te, &te.buyer, 100_000);
@@ -5257,7 +5593,7 @@ mod test {
     fn test_dividend_reinvestment_toggle() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &500, &te.token_id, &None);
@@ -5274,7 +5610,7 @@ mod test {
     fn test_distribute_zero_amount() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.distribute_dividends(&te.token_id, &0);
     }
 
@@ -5283,17 +5619,17 @@ mod test {
     fn test_distribute_no_holders() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.distribute_dividends(&te.token_id, &1000);
     }
 
-    // ── Tests for set_price and set_total_shares ────────────────────────
+    // â”€â”€ Tests for set_price and set_total_shares â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_set_price() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         c.set_price(&200);
         assert_eq!(c.get_price(), 200);
@@ -5303,7 +5639,7 @@ mod test {
     fn test_set_price_affects_future_buys() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -5319,7 +5655,7 @@ mod test {
     fn test_set_price_zero() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.set_price(&0);
     }
 
@@ -5328,7 +5664,7 @@ mod test {
     fn test_set_price_negative() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.set_price(&-50);
     }
 
@@ -5336,7 +5672,7 @@ mod test {
     fn test_set_total_shares_increase() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         c.set_total_shares(&1500);
         assert_eq!(c.get_total_shares(), 1500);
@@ -5347,7 +5683,7 @@ mod test {
     fn test_set_total_shares_after_partial_sale() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -5364,7 +5700,7 @@ mod test {
     fn test_set_total_shares_same_as_current() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         c.set_total_shares(&1000);
         assert_eq!(c.get_total_shares(), 1000);
@@ -5376,7 +5712,7 @@ mod test {
     fn test_set_total_shares_below_available() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.set_total_shares(&500);
     }
 
@@ -5386,7 +5722,7 @@ mod test {
         let te = setup();
         let c = client(&te);
         // Use very high price that will overflow when multiplied by shares
-        c.init(&te.admin, &te.token_id, &i128::MAX, &1000);
+        c.init(&te.admin, &te.token_id, &i128::MAX, &1000, &None);
         c.add_to_whitelist(&te.buyer);
         mint(&te, &te.buyer, i128::MAX);
         c.add_to_whitelist(&te.buyer);
@@ -5400,7 +5736,7 @@ mod test {
     fn test_buy_shares_overbuy() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.add_to_whitelist(&te.buyer);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
@@ -5414,7 +5750,7 @@ mod test {
     fn test_buy_shares_balance_overflow() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &1, &u32::MAX);
+        c.init(&te.admin, &te.token_id, &1, &u32::MAX, &None);
         c.add_to_whitelist(&te.buyer);
         mint(&te, &te.buyer, i128::MAX);
         c.add_to_whitelist(&te.buyer);
@@ -5435,7 +5771,7 @@ mod test {
     fn test_distribute_dividends_multiply_overflow() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.add_to_whitelist(&te.buyer);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
@@ -5455,7 +5791,7 @@ mod test {
     fn test_set_total_shares_below_issued_logic_check() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.add_to_whitelist(&te.buyer);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
@@ -5468,7 +5804,7 @@ mod test {
         c.set_total_shares(&500);
     }
 
-    // ── Issue #702: correcting price / supply after deployment ─────────
+    // â”€â”€ Issue #702: correcting price / supply after deployment â”€â”€â”€â”€â”€â”€â”€â”€â”€
     //
     // `init` writes `PricePerShare` and `TotalShares` exactly once, so a
     // mistake made at deployment time used to be permanent short of a full
@@ -5481,7 +5817,7 @@ mod test {
     fn test_update_price_while_paused() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         assert_eq!(c.get_price(), 100);
 
         c.pause();
@@ -5502,7 +5838,7 @@ mod test {
     fn test_update_price_requires_paused_marketplace() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         // No pause() call: the live marketplace must never be re-priced.
         c.update_price(&250);
@@ -5513,7 +5849,7 @@ mod test {
     fn test_update_price_rejected_again_after_unpause() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         c.pause();
         c.update_price(&250);
@@ -5530,7 +5866,7 @@ mod test {
     fn test_update_price_rejects_zero() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.pause();
         c.update_price(&0);
     }
@@ -5540,7 +5876,7 @@ mod test {
     fn test_update_price_rejects_negative() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.pause();
         c.update_price(&-250);
     }
@@ -5551,7 +5887,7 @@ mod test {
     fn test_update_price_rejects_unauthorized_caller() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.pause();
 
         // Replace "allow every signature" with "allow none".
@@ -5569,7 +5905,7 @@ mod test {
     fn test_increase_total_shares_while_paused() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -5599,7 +5935,7 @@ mod test {
     fn test_increase_total_shares_requires_paused_marketplace() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         c.increase_total_shares(&500);
     }
@@ -5609,7 +5945,7 @@ mod test {
     fn test_increase_total_shares_rejects_zero() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.pause();
         c.increase_total_shares(&0);
     }
@@ -5618,7 +5954,7 @@ mod test {
     fn test_increase_total_shares_rejects_unauthorized_caller() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.pause();
 
         te.env.mock_auths(&[]);
@@ -5633,7 +5969,7 @@ mod test {
     fn test_increase_total_shares_preserves_issued_shares() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &1000, &te.token_id, &None);
@@ -5651,7 +5987,7 @@ mod test {
     fn test_increase_total_shares_rejects_overflow() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &u32::MAX);
+        c.init(&te.admin, &te.token_id, &100, &u32::MAX, &None);
         c.pause();
         // Would wrap to 0 without the checked add.
         c.increase_total_shares(&1);
@@ -5662,7 +5998,7 @@ mod test {
     fn test_increase_total_shares_rejected_after_delisting() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         let reason = soroban_sdk::Bytes::from_slice(&te.env, b"delisting");
         c.delist_asset(&reason);
@@ -5673,7 +6009,7 @@ mod test {
         c.increase_total_shares(&500);
     }
 
-    // ── Pre-init tests: every function should give a clear error before init ─
+    // â”€â”€ Pre-init tests: every function should give a clear error before init â”€
 
     fn pre_init_client() -> (Env, RwaMarketplaceClient<'static>, Address, Address) {
         let env = Env::default();
@@ -5775,13 +6111,13 @@ mod test {
         client.buy_vested_shares(&buyer, &1, &3600, &token_id);
     }
 
-    // ── Metadata URI tests ──────────────────────────────────────────────
+    // â”€â”€ Metadata URI tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_set_and_get_metadata_uri() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         let uri = soroban_sdk::Bytes::from_slice(&te.env, b"ipfs://QmTest");
         c.set_metadata_uri(&uri);
@@ -5792,7 +6128,7 @@ mod test {
     fn test_get_metadata_uri_default_empty() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         assert_eq!(c.get_metadata_uri(), soroban_sdk::Bytes::new(&te.env));
     }
@@ -5801,7 +6137,7 @@ mod test {
     fn test_set_metadata_uri_overwrites() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         c.set_metadata_uri(&soroban_sdk::Bytes::from_slice(&te.env, b"ipfs://old"));
         let new_uri = soroban_sdk::Bytes::from_slice(&te.env, b"ipfs://new");
@@ -5809,13 +6145,13 @@ mod test {
         assert_eq!(c.get_metadata_uri(), new_uri);
     }
 
-    // ── Dividend schedule tests ─────────────────────────────────────────
+    // â”€â”€ Dividend schedule tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_set_dividend_schedule() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         c.set_dividend_schedule(&10_i128, &86400_u64);
         let schedule = c.get_dividend_schedule().unwrap();
@@ -5827,7 +6163,7 @@ mod test {
     fn test_get_dividend_schedule_default_none() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         assert!(c.get_dividend_schedule().is_none());
     }
@@ -5837,7 +6173,7 @@ mod test {
     fn test_set_dividend_schedule_zero_amount() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         c.set_dividend_schedule(&0, &86400);
     }
@@ -5847,7 +6183,7 @@ mod test {
     fn test_set_dividend_schedule_negative_amount() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         c.set_dividend_schedule(&-1, &86400);
     }
@@ -5857,7 +6193,7 @@ mod test {
     fn test_set_dividend_schedule_zero_interval() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         c.set_dividend_schedule(&10, &0);
     }
@@ -5867,7 +6203,7 @@ mod test {
     fn test_process_scheduled_dividend_no_schedule() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         c.process_scheduled_dividend();
     }
@@ -5877,10 +6213,10 @@ mod test {
     fn test_process_scheduled_dividend_interval_not_elapsed() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         c.set_dividend_schedule(&10, &86400);
-        // Call immediately — interval (86400s = 1 day) has not elapsed
+        // Call immediately â€” interval (86400s = 1 day) has not elapsed
         c.process_scheduled_dividend();
     }
 
@@ -5888,7 +6224,7 @@ mod test {
     fn test_process_scheduled_dividend_distributes() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         let buyer2 = Address::generate(&te.env);
         mint(&te, &te.buyer, 100_000);
@@ -5923,7 +6259,7 @@ mod test {
     fn test_process_scheduled_dividend_updates_last_distribution() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
@@ -5941,7 +6277,7 @@ mod test {
     fn test_process_scheduled_dividend_second_call_too_soon() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
@@ -5961,7 +6297,7 @@ mod test {
     fn test_process_scheduled_dividend_after_multiple_intervals() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
@@ -5990,7 +6326,7 @@ mod test {
     fn test_process_scheduled_dividend_honors_policy_withholding_and_history() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
@@ -6017,7 +6353,7 @@ mod test {
     fn test_set_dividend_policy_rejects_unsupported_type() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         c.set_dividend_policy(&2, &te.token_id, &0, &false);
     }
@@ -6027,20 +6363,20 @@ mod test {
     fn test_process_scheduled_dividend_no_holders() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         c.set_dividend_schedule(&10, &1);
         te.env.ledger().set_timestamp(te.env.ledger().timestamp() + 2);
         c.process_scheduled_dividend();
     }
 
-    // ── Max shares per user tests ───────────────────────────────────────
+    // â”€â”€ Max shares per user tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_max_shares_per_user_default_unlimited() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         // Defaults to 0, meaning no cap is enforced.
         assert_eq!(c.get_max_shares_per_user(), 0);
@@ -6050,7 +6386,7 @@ mod test {
     fn test_set_and_get_max_shares_per_user() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         c.set_max_shares_per_user(&50);
         assert_eq!(c.get_max_shares_per_user(), 50);
@@ -6060,7 +6396,7 @@ mod test {
     fn test_buy_within_cap_succeeds() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -6074,7 +6410,7 @@ mod test {
     fn test_buy_exceeding_cap_single_purchase() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -6087,7 +6423,7 @@ mod test {
     fn test_cap_checks_current_holdings_plus_purchase() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -6095,7 +6431,7 @@ mod test {
         // First purchase is fine (40 <= 50).
         c.buy_shares(&te.buyer, &40, &te.token_id, &None);
         assert_eq!(c.get_shares(&te.buyer), 40);
-        // Second purchase pushes total to 60 > 50 → rejected.
+        // Second purchase pushes total to 60 > 50 â†’ rejected.
         c.buy_shares(&te.buyer, &20, &te.token_id, &None);
     }
 
@@ -6103,7 +6439,7 @@ mod test {
     fn test_buy_up_to_cap_across_multiple_purchases() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -6117,7 +6453,7 @@ mod test {
     fn test_cap_does_not_block_transfer_when_rejected() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -6139,7 +6475,7 @@ mod test {
     fn test_cap_zero_means_unlimited() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 1_000_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -6153,7 +6489,7 @@ mod test {
     fn test_raising_cap_allows_more_purchases() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -6169,7 +6505,7 @@ mod test {
     fn test_cap_is_per_address_not_global() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         let buyer2 = Address::generate(&te.env);
         mint(&te, &te.buyer, 100_000);
@@ -6191,13 +6527,13 @@ mod test {
         client.set_max_shares_per_user(&50);
     }
 
-    // ── Transfer tests ──────────────────────────────────────────────────
+    // â”€â”€ Transfer tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_transfer_shares_basic() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -6214,7 +6550,7 @@ mod test {
     fn test_transfer_shares_insufficient_balance() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &10, &te.token_id, &None);
@@ -6228,7 +6564,7 @@ mod test {
     fn test_transfer_shares_zero_amount() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &10, &te.token_id, &None);
@@ -6241,7 +6577,7 @@ mod test {
     fn test_approve_and_transfer_from() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -6265,7 +6601,7 @@ mod test {
     fn test_transfer_from_exceeds_allowance() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -6281,7 +6617,7 @@ mod test {
     fn test_transfer_registers_recipient_as_holder() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -6293,13 +6629,13 @@ mod test {
         assert_eq!(c.get_holders().len(), 2);
     }
 
-    // ── Buyback tests ───────────────────────────────────────────────────
+    // â”€â”€ Buyback tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_buyback_shares_basic() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &100, &te.token_id, &None);
@@ -6325,7 +6661,7 @@ mod test {
     fn test_buyback_shares_zero() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &10, &te.token_id, &None);
@@ -6337,7 +6673,7 @@ mod test {
     fn test_buyback_shares_insufficient() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &10, &te.token_id, &None);
@@ -6349,7 +6685,7 @@ mod test {
     fn test_auto_buyback_config_sets_values() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.auto_buyback_config(&3600_u64, &50_u32, &100_000_i128);
         // Config set without error; process should succeed after interval
     }
@@ -6359,7 +6695,7 @@ mod test {
     fn test_auto_buyback_config_zero_interval() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.auto_buyback_config(&0_u64, &10_u32, &1000_i128);
     }
 
@@ -6368,7 +6704,7 @@ mod test {
     fn test_auto_buyback_config_zero_max_amount() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.auto_buyback_config(&3600_u64, &0_u32, &1000_i128);
     }
 
@@ -6377,7 +6713,7 @@ mod test {
     fn test_auto_buyback_config_zero_budget() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.auto_buyback_config(&3600_u64, &10_u32, &0_i128);
     }
 
@@ -6385,7 +6721,7 @@ mod test {
     fn test_process_auto_buyback_succeeds() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &100, &te.token_id, &None);
@@ -6408,14 +6744,14 @@ mod test {
     fn test_process_auto_buyback_too_soon() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &100, &te.token_id, &None);
         mint(&te, &te.contract_id, 50_000);
         c.auto_buyback_config(&3600_u64, &50_u32, &50_000_i128);
 
-        // Do NOT advance time — should fail immediately
+        // Do NOT advance time â€” should fail immediately
         c.process_auto_buyback(&te.buyer, &10);
     }
 
@@ -6424,7 +6760,7 @@ mod test {
     fn test_process_auto_buyback_exceeds_max() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &100, &te.token_id, &None);
@@ -6440,12 +6776,12 @@ mod test {
     fn test_process_auto_buyback_exceeds_budget() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &100, &te.token_id, &None);
 
-        // Budget of 500 → can afford only 5 shares at price 100
+        // Budget of 500 â†’ can afford only 5 shares at price 100
         mint(&te, &te.contract_id, 500);
         c.auto_buyback_config(&3600_u64, &50_u32, &500_i128);
 
@@ -6458,11 +6794,11 @@ mod test {
     fn test_process_auto_buyback_not_configured() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.process_auto_buyback(&te.buyer, &10);
     }
 
-    // ── NFT minting tests ───────────────────────────────────────────────
+    // â”€â”€ NFT minting tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     use share_certificate_nft::ShareCertificate;
 
@@ -6482,7 +6818,7 @@ mod test {
     fn test_set_and_get_nft_contract() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         let nft_id = setup_nft(&te);
         c.set_nft_contract(&nft_id);
@@ -6493,7 +6829,7 @@ mod test {
     fn test_get_nft_contract_default_none() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         assert_eq!(c.get_nft_contract(), None);
     }
@@ -6502,7 +6838,7 @@ mod test {
     fn test_buy_shares_mints_nfts() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -6511,7 +6847,7 @@ mod test {
 
         c.buy_shares(&te.buyer, &3, &te.token_id, &None);
 
-        // 3 shares purchased → 3 NFTs minted
+        // 3 shares purchased â†’ 3 NFTs minted
         use stellar_tokens::non_fungible::Base;
         te.env.as_contract(&nft_id, || {
             assert_eq!(Base::balance(&te.env, &te.buyer), 3);
@@ -6522,11 +6858,11 @@ mod test {
     fn test_buy_shares_without_nft_contract_still_works() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
-        // No NFT contract configured — buy_shares should succeed normally
+        // No NFT contract configured â€” buy_shares should succeed normally
         c.buy_shares(&te.buyer, &5, &te.token_id, &None);
         assert_eq!(c.get_shares(&te.buyer), 5);
     }
@@ -6535,7 +6871,7 @@ mod test {
     fn test_nft_owner_is_buyer() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -6550,13 +6886,13 @@ mod test {
         });
     }
 
-    // ── Secure Transfer Function Tests ───────────────────────────────────
+    // â”€â”€ Secure Transfer Function Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_set_transfer_fee_config() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         c.set_transfer_fee_config(&100, &te.admin, &1000);
         let config = c.get_transfer_fee_config().unwrap();
@@ -6570,7 +6906,7 @@ mod test {
     fn test_set_transfer_fee_config_too_high() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.set_transfer_fee_config(&10001, &te.admin, &1000);
     }
 
@@ -6579,7 +6915,7 @@ mod test {
     fn test_set_transfer_fee_config_negative_max() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.set_transfer_fee_config(&100, &te.admin, &-1);
     }
 
@@ -6587,7 +6923,7 @@ mod test {
     fn test_transfer_with_fee() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -6615,7 +6951,7 @@ mod test {
     fn test_batch_transfer() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &100, &te.token_id, &None);
@@ -6645,7 +6981,7 @@ mod test {
     fn test_batch_transfer_empty_recipients() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -6660,7 +6996,7 @@ mod test {
     fn test_batch_transfer_mismatched_lengths() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -6679,7 +7015,7 @@ mod test {
     fn test_set_transfer_restrictions() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         let restricted_addr = Address::generate(&te.env);
         c.set_transfer_restrictions(&restricted_addr, &1000, &50, &true);
@@ -6694,7 +7030,7 @@ mod test {
     fn test_remove_transfer_restrictions() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         let restricted_addr = Address::generate(&te.env);
         c.set_transfer_restrictions(&restricted_addr, &1000, &50, &true);
@@ -6709,7 +7045,7 @@ mod test {
     fn test_transfer_restriction_time_based() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -6727,7 +7063,7 @@ mod test {
     fn test_transfer_restriction_max_amount() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -6745,7 +7081,7 @@ mod test {
     fn test_transfer_requires_approval() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -6762,7 +7098,7 @@ mod test {
     fn test_request_transfer_approval() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -6782,7 +7118,7 @@ mod test {
     fn test_grant_and_execute_transfer_approval() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -6805,7 +7141,7 @@ mod test {
     fn test_execute_unapproved_transfer() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -6821,7 +7157,7 @@ mod test {
     fn test_transfer_whitelist() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         let addr = Address::generate(&te.env);
         assert!(c.is_transfer_whitelisted_public(&addr)); // Default is true
@@ -6838,7 +7174,7 @@ mod test {
     fn test_transfer_blocked_by_whitelist() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -6854,7 +7190,7 @@ mod test {
     fn test_transfer_history_tracking() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -6876,7 +7212,7 @@ mod test {
     fn test_reentrancy_protection() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -6898,7 +7234,7 @@ mod test {
     fn test_transfer_vested_shares_blocked() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -6915,7 +7251,7 @@ mod test {
     fn test_transfer_liquid_shares_after_vesting() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -6936,7 +7272,7 @@ mod test {
     fn test_transfer_from_with_restrictions() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -6956,7 +7292,7 @@ mod test {
     fn test_batch_transfer_with_fee() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &100, &te.token_id, &None);
@@ -6985,14 +7321,14 @@ mod test {
         assert_eq!(token_client.balance(&fee_recipient), 50);
     }
 
-    // ── Re-entrancy guard tests ───────────────────────────────────────────────
+    // â”€â”€ Re-entrancy guard tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     #[should_panic(expected = "Re-entrancy detected")]
     fn test_reentrancy_is_blocked() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -7009,7 +7345,7 @@ mod test {
     fn test_reentrancy_guard_cleared_after_successful_buy() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -7031,7 +7367,7 @@ mod test {
     fn test_reentrancy_blocked_on_panic_path() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -7049,7 +7385,7 @@ mod test {
     fn test_reentrancy_guard_default_false() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         // Check that reentrancy guard is not set by default after init
         te.env.as_contract(&te.contract_id, || {
@@ -7062,7 +7398,7 @@ mod test {
     fn test_double_reentrancy_blocked() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -7075,7 +7411,7 @@ mod test {
         c.buy_shares(&te.buyer, &10, &te.token_id, &None);
     }
 
-    // ── Issue #494: Reentrancy Guard Audit Tests ──────────────────────────
+    // â”€â”€ Issue #494: Reentrancy Guard Audit Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Verify that ALL state-changing external functions with token transfers
     // are protected by the reentrancy guard.
 
@@ -7084,7 +7420,7 @@ mod test {
     fn test_reentrancy_blocked_on_emergency_withdraw() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.admin, 100_000);
 
         // Manually lock the guard
@@ -7100,7 +7436,7 @@ mod test {
     fn test_reentrancy_blocked_on_distribute_dividends() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &100, &te.token_id, &None);
@@ -7118,7 +7454,7 @@ mod test {
     fn test_reentrancy_blocked_on_claim_dividends() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &100, &te.token_id, &None);
@@ -7139,7 +7475,7 @@ mod test {
     fn test_reentrancy_blocked_on_buy_from_order() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &100, &te.token_id, &None);
@@ -7160,7 +7496,7 @@ mod test {
     fn test_reentrancy_blocked_on_buyback_shares() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &100, &te.token_id, &None);
@@ -7181,7 +7517,7 @@ mod test {
     fn test_reentrancy_blocked_on_buy_vested_shares() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -7197,7 +7533,7 @@ mod test {
     fn test_reentrancy_guard_cleared_after_emergency_withdraw() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.admin, 100_000);
 
         c.emergency_withdraw(&te.admin, &0);
@@ -7212,7 +7548,7 @@ mod test {
     fn test_reentrancy_guard_cleared_after_distribute_dividends() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &100, &te.token_id, &None);
@@ -7225,7 +7561,7 @@ mod test {
         });
     }
 
-    // ── Event emission tests (Issue #167) ─────────────────────────────────
+    // â”€â”€ Event emission tests (Issue #167) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Each test below calls a state-modifying function and then verifies
     // that at least one event was emitted by the contract. Because the event
     // `publish` call is the last thing in each function, a successful return
@@ -7235,15 +7571,15 @@ mod test {
     fn test_event_emission_on_init() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
-        // init emits EventInit – no panic means success
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
+        // init emits EventInit â€“ no panic means success
     }
 
     #[test]
     fn test_event_emission_on_buy_shares() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &10, &te.token_id, &None);
@@ -7253,7 +7589,7 @@ mod test {
     fn test_event_emission_on_pause() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.pause();
     }
 
@@ -7261,7 +7597,7 @@ mod test {
     fn test_event_emission_on_unpause() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.pause();
         c.unpause();
     }
@@ -7270,7 +7606,7 @@ mod test {
     fn test_event_emission_on_set_price() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.set_price(&200);
     }
 
@@ -7278,7 +7614,7 @@ mod test {
     fn test_event_emission_on_set_total_shares() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.set_total_shares(&2000);
     }
 
@@ -7286,7 +7622,7 @@ mod test {
     fn test_event_emission_on_transfer() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -7298,7 +7634,7 @@ mod test {
     fn test_event_emission_on_approve() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -7310,7 +7646,7 @@ mod test {
     fn test_event_emission_on_sell_order_flow() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -7322,7 +7658,7 @@ mod test {
     fn test_event_emission_on_buyback() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &100, &te.token_id, &None);
@@ -7334,7 +7670,7 @@ mod test {
     fn test_event_emission_on_auto_buyback_config() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.auto_buyback_config(&3600_u64, &50_u32, &100_000_i128);
     }
 
@@ -7342,7 +7678,7 @@ mod test {
     fn test_event_emission_on_set_max_shares_per_user() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.set_max_shares_per_user(&100);
     }
 
@@ -7350,7 +7686,7 @@ mod test {
     fn test_event_emission_on_emergency_withdraw() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.emergency_withdraw(&te.admin, &0);
     }
 
@@ -7358,7 +7694,7 @@ mod test {
     fn test_event_emission_on_distribute_dividends() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &500, &te.token_id, &None);
@@ -7371,7 +7707,7 @@ mod test {
     fn test_event_emission_on_set_dividend_schedule() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.set_dividend_schedule(&10_i128, &86400_u64);
     }
 
@@ -7379,7 +7715,7 @@ mod test {
     fn test_event_emission_on_process_scheduled_dividend() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &500, &te.token_id, &None);
@@ -7389,13 +7725,13 @@ mod test {
         c.process_scheduled_dividend();
     }
 
-    // ── Newly added event emission tests (Issue #167) ───────────────────
+    // â”€â”€ Newly added event emission tests (Issue #167) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_event_emission_on_set_nft_contract() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         let nft_id = te.env.register(share_certificate_nft::ShareCertificate, ());
         c.set_nft_contract(&nft_id);
     }
@@ -7404,7 +7740,7 @@ mod test {
     fn test_event_emission_on_whitelist_ops() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         let addr = Address::generate(&te.env);
         c.add_to_whitelist(&addr);
         c.remove_from_whitelist(&addr);
@@ -7414,7 +7750,7 @@ mod test {
     fn test_event_emission_on_set_metadata_uri() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         let uri = soroban_sdk::Bytes::from_slice(&te.env, b"ipfs://QmTest");
         c.set_metadata_uri(&uri);
     }
@@ -7423,7 +7759,7 @@ mod test {
     fn test_event_emission_on_claim_vested_shares() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_vested_shares(&te.buyer, &10, &1, &te.token_id);
@@ -7530,7 +7866,7 @@ impl RwaMarketplace {
     fn test_pause_blocks_buy_shares() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -7546,7 +7882,7 @@ impl RwaMarketplace {
     fn test_unpause_restores_buy_shares() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -7566,7 +7902,7 @@ impl RwaMarketplace {
     fn test_function_pause_blocks_buy_shares() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -7581,7 +7917,7 @@ impl RwaMarketplace {
     fn test_function_unpause_restores_buy_shares() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -7612,7 +7948,7 @@ mod timelock_tests {
         let contract_id = env.register(RwaMarketplace, ());
         let client = RwaMarketplaceClient::new(&env, &contract_id);
         
-        client.init(&admin, &payment_token, &100_i128, &1000_u32);
+        client.init(&admin, &payment_token, &100_i128, &1000_u32, &None);
         
         let action = AdminAction::Pause;
         
@@ -7634,7 +7970,7 @@ mod timelock_tests {
         let contract_id = env.register(RwaMarketplace, ());
         let client = RwaMarketplaceClient::new(&env, &contract_id);
         
-        client.init(&admin, &payment_token, &100_i128, &1000_u32);
+        client.init(&admin, &payment_token, &100_i128, &1000_u32, &None);
         
         let action = AdminAction::Pause;
         client.schedule_operation(&admin, &action);
@@ -7651,7 +7987,7 @@ mod timelock_tests {
         let contract_id = env.register(RwaMarketplace, ());
         let client = RwaMarketplaceClient::new(&env, &contract_id);
         
-        client.init(&admin, &payment_token, &100_i128, &1000_u32);
+        client.init(&admin, &payment_token, &100_i128, &1000_u32, &None);
         
         let action = AdminAction::Pause;
         client.schedule_operation(&admin, &action);
@@ -7669,7 +8005,7 @@ mod timelock_tests {
         let contract_id = env.register(RwaMarketplace, ());
         let client = RwaMarketplaceClient::new(&env, &contract_id);
         
-        client.init(&admin, &payment_token, &100_i128, &1000_u32);
+        client.init(&admin, &payment_token, &100_i128, &1000_u32, &None);
         
         let action = AdminAction::Unpause;
         client.schedule_operation(&admin, &action);
@@ -7678,7 +8014,7 @@ mod timelock_tests {
     }
 }
 
-// ── Property-based / fuzz tests using proptest ─────────────────────────
+// â”€â”€ Property-based / fuzz tests using proptest â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[cfg(test)]
 mod property_tests {
@@ -7729,7 +8065,7 @@ mod property_tests {
                 token::StellarAssetClient::new(&env, &token_id).mint(b, &1_000_000_000);
             }
 
-            client.init(&admin, &token_id, &INIT_PRICE, &INIT_TOTAL);
+            client.init(&admin, &token_id, &INIT_PRICE, &INIT_TOTAL, &None);
 
             for b in buyers.iter() {
                 client.add_to_whitelist(b);
@@ -7809,7 +8145,7 @@ mod property_tests {
                 .address();
             let contract_id = env.register(RwaMarketplace, ());
             let client = RwaMarketplaceClient::new(&env, &contract_id);
-            client.init(&admin, &token_id, &INIT_PRICE, &INIT_TOTAL);
+            client.init(&admin, &token_id, &INIT_PRICE, &INIT_TOTAL, &None);
 
             for should_pause in pauses {
                 if should_pause {
@@ -7838,7 +8174,7 @@ mod property_tests {
 
             let buyer = Address::generate(&env);
             token::StellarAssetClient::new(&env, &token_id).mint(&buyer, &1_000_000_000);
-            client.init(&admin, &token_id, &INIT_PRICE, &INIT_TOTAL);
+            client.init(&admin, &token_id, &INIT_PRICE, &INIT_TOTAL, &None);
             client.add_to_whitelist(&buyer);
 
             let mut total_bought = 0u32;
@@ -7868,7 +8204,7 @@ mod property_tests {
         }
     }
 }
-// ── Additional Fuzz Targets for Issue #514 ────────────────────────────
+// â”€â”€ Additional Fuzz Targets for Issue #514 â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // Targets: fractional math overflow/underflow, order book state transitions,
 // and dividend distribution invariants.
 
@@ -7939,7 +8275,7 @@ mod fuzz_order_book_transitions {
     const INIT_PRICE: i128 = 100;
     const INIT_TOTAL: u32 = 10_000;
 
-    /// Fuzz: order book state transitions — place, fill, cancel.
+    /// Fuzz: order book state transitions â€” place, fill, cancel.
     /// Invariant: total shares (available + escrowed + held) == total_shares.
     proptest! {
         #[test]
@@ -7961,7 +8297,7 @@ mod fuzz_order_book_transitions {
             token::StellarAssetClient::new(&env, &token_id).mint(&buyer, &100_000_000);
             token::StellarAssetClient::new(&env, &token_id).mint(&seller, &100_000_000);
 
-            client.init(&admin, &token_id, &INIT_PRICE, &INIT_TOTAL);
+            client.init(&admin, &token_id, &INIT_PRICE, &INIT_TOTAL, &None);
             client.add_to_whitelist(&buyer);
             client.add_to_whitelist(&seller);
 
@@ -8038,7 +8374,7 @@ mod fuzz_dividend_distribution {
             token::StellarAssetClient::new(&env, &token_id).mint(&buyer, &100_000_000);
             token::StellarAssetClient::new(&env, &token_id).mint(&contract_id, &1_000_000_000);
 
-            client.init(&admin, &token_id, &INIT_PRICE, &INIT_TOTAL);
+            client.init(&admin, &token_id, &INIT_PRICE, &INIT_TOTAL, &None);
             client.add_to_whitelist(&buyer);
 
             let actual_shares = buyer_shares.min(INIT_TOTAL - 1);
@@ -8059,7 +8395,7 @@ mod fuzz_dividend_distribution {
     }
 }
 
-// ── Vesting Analytics & History Tests ─────────────────────────────
+// â”€â”€ Vesting Analytics & History Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[cfg(test)]
 mod vesting_analytics_tests {
@@ -8083,7 +8419,7 @@ mod vesting_analytics_tests {
 
         let contract_id = env.register(RwaMarketplace, ());
         let c = RwaMarketplaceClient::new(&env, &contract_id);
-        c.init(&admin, &token_id, &100, &1000);
+        c.init(&admin, &token_id, &100, &1000, &None);
 
         // Mint tokens and whitelist buyer for test setup
         let token_client = StellarAssetClient::new(&env, &token_id);
@@ -8189,7 +8525,7 @@ impl RwaMarketplace {
             .expect("Contract not initialized: admin")
     }
 
-    // ── Issue #638: Two-step admin transfer ──────────────────────────────
+    // â”€â”€ Issue #638: Two-step admin transfer â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     /// Initiate admin transfer by proposing `new_admin`.
     /// Only the current admin can call this. The transfer is not complete
@@ -8432,11 +8768,11 @@ mod oracle_bridge_tests {
 
     fn init(te: &TestEnv) {
         let c = client(te);
-        c.init(&te.admin, &te.token_id, &INIT_PRICE, &INIT_TOTAL);
+        c.init(&te.admin, &te.token_id, &INIT_PRICE, &INIT_TOTAL, &None);
         c.add_to_whitelist(&te.buyer);
     }
 
-    // ── Oracle tests (Issue #169) ─────────────────────────────────────────────
+    // â”€â”€ Oracle tests (Issue #169) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_set_and_get_oracle() {
@@ -8469,7 +8805,7 @@ mod oracle_bridge_tests {
         let te = setup();
         let c = client(&te);
         let oracle_addr = Address::generate(&te.env);
-        // No init() called — must panic
+        // No init() called â€” must panic
         c.set_oracle(&oracle_addr);
     }
 
@@ -8490,7 +8826,7 @@ mod oracle_bridge_tests {
         assert_eq!(c.get_shares(&te.buyer), 10);
     }
 
-    // ── Bridge tests (Issue #170) ─────────────────────────────────────────────
+    // â”€â”€ Bridge tests (Issue #170) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_lock_for_bridge_reduces_liquid_balance() {
@@ -8624,7 +8960,7 @@ mod oracle_bridge_tests {
         let te = setup();
         init(&te);
         let c = client(&te);
-        // No lock operations performed — should return 0
+        // No lock operations performed â€” should return 0
         assert_eq!(c.get_bridge_locked(&te.buyer), 0);
     }
 
@@ -8643,7 +8979,7 @@ mod oracle_bridge_tests {
     }
 }
 
-// ── SIP-4 Metadata Tests (Issue #168) ──────────────────────────────────────────
+// â”€â”€ SIP-4 Metadata Tests (Issue #168) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 #[cfg(test)]
 mod sip4_metadata_tests {
@@ -8680,7 +9016,7 @@ mod sip4_metadata_tests {
 
     fn init(te: &TestEnv) {
         let c = client(te);
-        c.init(&te.admin, &te.token_id, &INIT_PRICE, &INIT_TOTAL);
+        c.init(&te.admin, &te.token_id, &INIT_PRICE, &INIT_TOTAL, &None);
         c.add_to_whitelist(&te.buyer);
     }
 
@@ -8708,13 +9044,13 @@ mod sip4_metadata_tests {
         c.get_contract_metadata();
     }
 
-    // ── Issue #262: Batch purchase tests ─────────────────────────────────
+    // â”€â”€ Issue #262: Batch purchase tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_batch_buy_shares_basic() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 1_000_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -8757,7 +9093,7 @@ mod sip4_metadata_tests {
     fn test_batch_buy_shares_partial_fulfillment() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 1_000_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -8792,7 +9128,7 @@ mod sip4_metadata_tests {
     fn test_batch_buy_shares_exceeds_available() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &50); // Only 50 shares
+        c.init(&te.admin, &te.token_id, &100, &50, &None); // Only 50 shares
         mint(&te, &te.buyer, 1_000_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -8821,7 +9157,7 @@ mod sip4_metadata_tests {
     fn test_batch_buy_shares_empty_batch() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         c.add_to_whitelist(&te.buyer);
 
         let requests: Vec<BatchPurchaseRequest> = Vec::new(&te.env);
@@ -8833,7 +9169,7 @@ mod sip4_metadata_tests {
     fn test_batch_buy_shares_exceeds_max_batch_size() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 1_000_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -8853,7 +9189,7 @@ mod sip4_metadata_tests {
     fn test_batch_buy_shares_requires_whitelist() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 1_000_000);
         // Not whitelisted
 
@@ -8870,7 +9206,7 @@ mod sip4_metadata_tests {
     fn test_batch_buy_shares_when_paused() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 1_000_000);
         c.add_to_whitelist(&te.buyer);
         c.pause();
@@ -8887,7 +9223,7 @@ mod sip4_metadata_tests {
     fn test_batch_buy_shares_all_fail() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 1_000_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -8916,7 +9252,7 @@ mod sip4_metadata_tests {
     fn test_get_batch_quote_accuracy() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 1_000_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -8954,7 +9290,7 @@ mod sip4_metadata_tests {
     fn test_batch_buy_shares_single_item() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 1_000_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -8977,7 +9313,7 @@ mod sip4_metadata_tests {
     fn test_batch_buy_shares_max_batch_size() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 1_000_000);
         c.add_to_whitelist(&te.buyer);
 
@@ -8998,13 +9334,13 @@ mod sip4_metadata_tests {
         assert_eq!(c.get_shares(&te.buyer), 10);        assert_eq!(c.get_available_shares(), 990);
     }
 
-    // ── Issue #270: Whitelist enhancement tests ───────────────────────────
+    // â”€â”€ Issue #270: Whitelist enhancement tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_add_to_whitelist_batch() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         let a1 = Address::generate(&te.env);
         let a2 = Address::generate(&te.env);
         let mut addrs: Vec<Address> = Vec::new(&te.env);
@@ -9019,7 +9355,7 @@ mod sip4_metadata_tests {
     fn test_set_whitelist_expiry() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         let addr = Address::generate(&te.env);
         c.add_to_whitelist(&addr);
         let far_future = te.env.ledger().timestamp() + 86_400;
@@ -9034,18 +9370,18 @@ mod sip4_metadata_tests {
     fn test_set_whitelist_tier_invalid() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         let addr = Address::generate(&te.env);
         c.set_whitelist_tier(&addr, &5_u32);
     }
 
-    // ── Issue #263: Transfer fee tests ─────────────────────────────────────
+    // â”€â”€ Issue #263: Transfer fee tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_set_and_get_transfer_fee() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         let collector = Address::generate(&te.env);
         c.set_transfer_fee(&30_u32, &collector);
         let (fee_bps, fee_collector) = c.get_transfer_fee();
@@ -9058,18 +9394,18 @@ mod sip4_metadata_tests {
     fn test_set_transfer_fee_too_high() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         let collector = Address::generate(&te.env);
         c.set_transfer_fee(&2000_u32, &collector);
     }
 
-    // ── Issue #268: Buyback enhancement tests ─────────────────────────────
+    // â”€â”€ Issue #268: Buyback enhancement tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_request_buyback() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &100, &te.token_id, &None);
@@ -9083,7 +9419,7 @@ mod sip4_metadata_tests {
     fn test_buyback_paused() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &100, &te.token_id, &None);
@@ -9092,14 +9428,14 @@ mod sip4_metadata_tests {
         c.buyback_shares(&te.buyer, &10);
     }
 
-    // ── Issue #465: Global pause checks for all state-changing operations ──
+    // â”€â”€ Issue #465: Global pause checks for all state-changing operations â”€â”€
 
     #[test]
     #[should_panic(expected = "Marketplace is paused")]
     fn test_transfer_shares_when_paused() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &10, &te.token_id, &None);
@@ -9112,7 +9448,7 @@ mod sip4_metadata_tests {
     fn test_place_sell_order_when_paused() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &10, &te.token_id, &None);
@@ -9125,7 +9461,7 @@ mod sip4_metadata_tests {
     fn test_buy_from_order_when_paused() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &10, &te.token_id, &None);
@@ -9139,7 +9475,7 @@ mod sip4_metadata_tests {
     fn test_buyback_shares_when_paused() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &100, &te.token_id, &None);
@@ -9148,13 +9484,13 @@ mod sip4_metadata_tests {
         c.buyback_shares(&te.buyer, &10);
     }
 
-    // ── Issue #570: Emergency Asset Delisting ─────────────────────────────
+    // â”€â”€ Issue #570: Emergency Asset Delisting â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_delist_asset_halts_trading_and_cancels_orders() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         mint(&te, &te.buyer, 100_000);
         c.add_to_whitelist(&te.buyer);
         c.buy_shares(&te.buyer, &50, &te.token_id, &None);
@@ -9186,19 +9522,19 @@ mod sip4_metadata_tests {
     fn test_delist_asset_is_irreversible() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
         let reason = soroban_sdk::Bytes::from_slice(&te.env, b"legal-dispute");
         c.delist_asset(&reason);
         c.delist_asset(&reason);
     }
 
-    // ── Issue #635: Slippage protection tests ─────────────────────────
+    // â”€â”€ Issue #635: Slippage protection tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
     fn test_buy_shares_with_slippage_protection_passes_when_price_ok() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         // max_price_per_share = 100 matches the set price, so it should pass
         c.buy_shares(&te.buyer, &10, &te.token_id, &Some(100));
@@ -9209,7 +9545,7 @@ mod sip4_metadata_tests {
     fn test_buy_shares_with_slippage_protection_passes_when_price_below_max() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         // max_price_per_share = 200 is above the set price of 100, so it should pass
         c.buy_shares(&te.buyer, &10, &te.token_id, &Some(200));
@@ -9221,7 +9557,7 @@ mod sip4_metadata_tests {
     fn test_buy_shares_slippage_protection_reverts_when_price_exceeds_max() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
         // max_price_per_share = 50 is below the set price of 100, so it should revert
         c.buy_shares(&te.buyer, &10, &te.token_id, &Some(50));
@@ -9231,9 +9567,9 @@ mod sip4_metadata_tests {
     fn test_buy_shares_no_slippage_check_when_none() {
         let te = setup();
         let c = client(&te);
-        c.init(&te.admin, &te.token_id, &100, &1000);
+        c.init(&te.admin, &te.token_id, &100, &1000, &None);
 
-        // None means no slippage check — should pass regardless of price
+        // None means no slippage check â€” should pass regardless of price
         c.buy_shares(&te.buyer, &10, &te.token_id, &None);
         assert_eq!(c.get_shares(&te.buyer), 10);
     }
