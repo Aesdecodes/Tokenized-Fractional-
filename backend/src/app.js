@@ -82,6 +82,14 @@ import { createGraphQLPlaygroundSecurityMiddleware } from '../graphql.js';
 import { createApiMonitoringRoutes } from './routes/apiMonitoring.js';
 import { createIPAccessRoutes } from './routes/ipAccess.js';
 import { createStatementRoutes } from './routes/statements.js';
+import { createAdminConfigRoutes } from './routes/adminConfig.js';
+import { createBackupRoutes } from './routes/backups.js';
+import * as backupService from './services/backupService.js';
+import { createOAuthRouter } from './routes/oauthRoutes.js';
+import { createRateLimitAdminRoutes } from './routes/rateLimitAdmin.js';
+import { RateLimiterService } from './services/rateLimiterService.js';
+import { createTimeWindowRoutes } from './routes/timeWindows.js';
+import { TimeWindowService } from './services/timeWindowService.js';
 import { requestLogger } from './middleware/requestLogger.js';
 import {
   createProblemDetailsInterceptor,
@@ -114,6 +122,11 @@ const webhookRoutes = null;
 const flashLoanProtectionService = null;
 const flashLoanProtectionRoutes = null;
 let ipAccessRoutes = null;
+let adminConfigRoutes = null;
+let backupsRoutes = null;
+let oauthRoutes = null;
+let rateLimitAdminRoutes = null;
+let timeWindowRoutes = null;
 
 /**
  * Initialize the app with database services.
@@ -174,10 +187,27 @@ export async function initializeApp() {
 
     // Setup analytics and purchases routes
     analyticsRoutes = createAnalyticsRoutes(transactionService, logger, adminAuth);
-    purchasesRoutes = createPurchaseRoutes(transactionService, logger);
+    purchasesRoutes = createPurchaseRoutes(transactionService, logger, adminAuth);
 
     // Setup rate limiting routes
     rateLimitingRoutes = createRateLimitingRoutes(logger, adminAuth);
+
+    // Setup admin config routes
+    adminConfigRoutes = createAdminConfigRoutes();
+
+    // Setup backup management routes
+    backupsRoutes = createBackupRoutes(backupService, logger);
+
+    // Setup OAuth routes
+    oauthRoutes = createOAuthRouter(db, logger);
+
+    // Setup Rate Limit Admin routes
+    const rateLimiterService = new RateLimiterService();
+    rateLimitAdminRoutes = createRateLimitAdminRoutes(rateLimiterService, adminAuth);
+
+    // Setup Time Window routes
+    const timeWindowService = new TimeWindowService(db, logger);
+    timeWindowRoutes = createTimeWindowRoutes(timeWindowService, logger, adminAuth);
 
     // Initialize GraphQL Federation Gateway
     const federatedGraphQL = await createFederatedGraphQLServer({
@@ -514,6 +544,77 @@ app.use('/api/ip-access', (req, res, next) => {
   }
   adminAuth(req, res, () => ipAccessRoutes(req, res, next));
 });
+
+// Mount Admin Configuration routes (admin only)
+app.use('/api/v1/admin', (req, res, next) => {
+  if (!adminConfigRoutes) {
+    return res.status(503).json({ error: 'Admin config service not initialized', code: 'SERVICE_UNAVAILABLE' });
+  }
+  adminConfigRoutes(req, res, next);
+});
+app.use('/api/admin', (req, res, next) => {
+  if (!adminConfigRoutes) {
+    return res.status(503).json({ error: 'Admin config service not initialized', code: 'SERVICE_UNAVAILABLE' });
+  }
+  adminConfigRoutes(req, res, next);
+});
+
+// Mount Backup routes (admin only)
+app.use('/api/v1/backups', (req, res, next) => {
+  if (!backupsRoutes) {
+    return res.status(503).json({ error: 'Backup service not initialized', code: 'SERVICE_UNAVAILABLE' });
+  }
+  adminAuth(req, res, () => backupsRoutes(req, res, next));
+});
+app.use('/api/backups', (req, res, next) => {
+  if (!backupsRoutes) {
+    return res.status(503).json({ error: 'Backup service not initialized', code: 'SERVICE_UNAVAILABLE' });
+  }
+  adminAuth(req, res, () => backupsRoutes(req, res, next));
+});
+
+// Mount OAuth routes
+app.use('/api/v1/auth', (req, res, next) => {
+  if (!oauthRoutes) {
+    return res.status(503).json({ error: 'OAuth service not initialized', code: 'SERVICE_UNAVAILABLE' });
+  }
+  oauthRoutes(req, res, next);
+});
+app.use('/api/auth', (req, res, next) => {
+  if (!oauthRoutes) {
+    return res.status(503).json({ error: 'OAuth service not initialized', code: 'SERVICE_UNAVAILABLE' });
+  }
+  oauthRoutes(req, res, next);
+});
+
+// Mount Rate Limit Admin routes (admin only)
+app.use('/api/v1/rate-limit-admin', (req, res, next) => {
+  if (!rateLimitAdminRoutes) {
+    return res.status(503).json({ error: 'Rate limit admin service not initialized', code: 'SERVICE_UNAVAILABLE' });
+  }
+  adminAuth(req, res, () => rateLimitAdminRoutes(req, res, next));
+});
+app.use('/api/rate-limit-admin', (req, res, next) => {
+  if (!rateLimitAdminRoutes) {
+    return res.status(503).json({ error: 'Rate limit admin service not initialized', code: 'SERVICE_UNAVAILABLE' });
+  }
+  adminAuth(req, res, () => rateLimitAdminRoutes(req, res, next));
+});
+
+// Mount Time Window routes
+app.use('/api/v1/time-windows', (req, res, next) => {
+  if (!timeWindowRoutes) {
+    return res.status(503).json({ error: 'Time window service not initialized', code: 'SERVICE_UNAVAILABLE' });
+  }
+  timeWindowRoutes(req, res, next);
+});
+app.use('/api/time-windows', (req, res, next) => {
+  if (!timeWindowRoutes) {
+    return res.status(503).json({ error: 'Time window service not initialized', code: 'SERVICE_UNAVAILABLE' });
+  }
+  timeWindowRoutes(req, res, next);
+});
+
 
 // Mount GraphQL Security Middleware
 app.use('/graphql', createGraphQLPlaygroundSecurityMiddleware());

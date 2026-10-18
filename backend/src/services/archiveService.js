@@ -190,8 +190,12 @@ export async function archiveOldTransactions() {
   cutoffDate.setDate(cutoffDate.getDate() - TRANSACTION_RETENTION_DAYS);
 
   try {
+    // Issue #912: Exclude transactions with active legal holds
     const oldTransactions = await db('transactions')
       .where('created_at', '<', cutoffDate)
+      .where((builder) => {
+        builder.where('legal_hold', false).orWhereNull('legal_hold');
+      })
       .select('*');
 
     if (oldTransactions.length === 0) {
@@ -209,6 +213,9 @@ export async function archiveOldTransactions() {
 
     const deletedCount = await db('transactions')
       .where('created_at', '<', cutoffDate)
+      .where((builder) => {
+        builder.where('legal_hold', false).orWhereNull('legal_hold');
+      })
       .del();
 
     logger.info(`[Archive] Archived ${deletedCount} transactions (Archive ID: ${archiveId})`);
@@ -223,6 +230,73 @@ export async function archiveOldTransactions() {
     throw error;
   }
 }
+
+/**
+ * Issue #912: Place a legal hold on a transaction, exempting it from automated archiving.
+ * @param {string|number} transactionId
+ * @param {Object} options
+ * @returns {Promise<Object>} Updated transaction
+ */
+export async function placeLegalHold(transactionId, options = {}) {
+  const db = getDatabase();
+  const { reason = 'Active investigation or dispute', placedBy = 'admin' } = options;
+
+  const tx = await db('transactions')
+    .where('id', transactionId)
+    .orWhere('transaction_id', transactionId)
+    .first();
+
+  if (!tx) {
+    throw new Error(`Transaction ${transactionId} not found`);
+  }
+
+  await db('transactions')
+    .where('id', tx.id)
+    .update({
+      legal_hold: true,
+      legal_hold_reason: reason,
+      legal_hold_placed_at: new Date(),
+      legal_hold_placed_by: placedBy,
+      updated_at: new Date(),
+    });
+
+  logger.info(`[Archive] Placed legal hold on transaction ${tx.id} (${tx.transaction_id}). Reason: ${reason}`);
+  return db('transactions').where('id', tx.id).first();
+}
+
+/**
+ * Issue #912: Release a legal hold on a transaction.
+ * @param {string|number} transactionId
+ * @param {Object} options
+ * @returns {Promise<Object>} Updated transaction
+ */
+export async function releaseLegalHold(transactionId, options = {}) {
+  const db = getDatabase();
+  const { releasedBy = 'admin' } = options;
+
+  const tx = await db('transactions')
+    .where('id', transactionId)
+    .orWhere('transaction_id', transactionId)
+    .first();
+
+  if (!tx) {
+    throw new Error(`Transaction ${transactionId} not found`);
+  }
+
+  await db('transactions')
+    .where('id', tx.id)
+    .update({
+      legal_hold: false,
+      legal_hold_reason: null,
+      legal_hold_placed_at: null,
+      legal_hold_placed_by: null,
+      updated_at: new Date(),
+    });
+
+  logger.info(`[Archive] Released legal hold on transaction ${tx.id} (${tx.transaction_id}) by ${releasedBy}`);
+  return db('transactions').where('id', tx.id).first();
+}
+
 
 /**
  * Archive old user activity data.
