@@ -147,7 +147,17 @@ pub enum DataKey {
     /// Whitelist expiry timestamp per address
     WhitelistExpiry(Address),
     /// Whitelist tier per address (0=standard, 1=premium, 2=institutional)
-    WhitelistTier(Address),
+    WhitelistTier(u32),
+
+    /// Issue #765: pull-based distribution accumulator, in token units per
+    /// share scaled by `DIST_SCALE`.
+    DistributionAcc,
+    /// Issue #765: total deposited but not yet claimed distribution amount.
+    DistributionUnclaimed,
+    /// Issue #765: accumulator value recorded at the holder's last settle.
+    DistributionSnapshot(Address),
+    /// Issue #765: accrued but unclaimed distribution amount for a holder.
+    DistributionPending(Address),
 }
 
 #[contracttype]
@@ -283,6 +293,15 @@ pub struct TransferApproval {
     pub approved: bool,
 }
 
+/// Composite whitelist status returned by `get_whitelist_info`.
+#[contracttype]
+#[derive(Clone)]
+pub struct WhitelistInfo {
+    pub whitelisted: bool,
+    pub expiry: u64,
+    pub tier: u32,
+}
+
 // ── Issue #494: Additional struct definitions for missing DataKey variants ──
 
 #[contracttype]
@@ -385,6 +404,31 @@ pub struct EventAddPaymentToken {
 #[contractevent(data_format = "vec")]
 pub struct EventRemovePaymentToken {
     token: Address,
+}
+
+/// Issue #679: emitted whenever the default payment token is migrated.
+#[contractevent(data_format = "vec")]
+pub struct EventUpdatePaymentToken {
+    pub admin: Address,
+    pub old_payment_token: Address,
+    pub new_payment_token: Address,
+}
+
+/// Issue #765: emitted when income is deposited for pro-rata distribution.
+#[contractevent(data_format = "vec")]
+pub struct EventDistributionDeposited {
+    pub admin: Address,
+    pub token: Address,
+    pub amount: i128,
+    pub issued_shares: u32,
+}
+
+/// Issue #765: emitted when a holder claims their accrued distribution.
+#[contractevent(data_format = "vec")]
+pub struct EventDistributionClaimed {
+    pub holder: Address,
+    pub token: Address,
+    pub amount: i128,
 }
 
 #[contractevent(data_format = "vec")]
@@ -657,6 +701,201 @@ fn checked_add_u32(a: u32, b: u32) -> u32 {
 /// Safely subtract two u32 values, panicking on underflow
 fn checked_sub_u32(a: u32, b: u32) -> u32 {
     a.checked_sub(b).unwrap_or_else(|| panic!("Arithmetic underflow: cannot subtract {} from {}", b, a))
+}
+
+// ── Issue #765: pull-based income distribution accumulator ───────────────
+
+/// Fixed-point scale for the distribution accumulator: token units per
+/// share, scaled by 1e9 so small distributions still accrue per share.
+const DIST_SCALE: i128 = 1_000_000_000;
+
+/// Current global "token units per share" accumulator (scaled by `DIST_SCALE`).
+fn _dist_acc(env: &Env) -> i128 {
+    env.storage().instance().get(&DataKey::DistributionAcc).unwrap_or(0)
+}
+
+/// Total deposited but not yet paid out by `claim_distribution`.
+fn _dist_unclaimed(env: &Env) -> i128 {
+    env.storage().instance().get(&DataKey::DistributionUnclaimed).unwrap_or(0)
+}
+
+/// Shares that are actually held (issued minus unsold/returned inventory).
+/// Used as the distribution denominator; it is always >= the sum of holder
+/// balances (open sell orders escrow shares outside of balances), so pro-rata
+/// entitlements computed against it can never exceed the deposited amount.
+fn _issued_shares(env: &Env) -> u32 {
+    let total: u32 = env.storage().instance().get(&DataKey::TotalShares).unwrap_or(0);
+    let available: u32 = env.storage().instance().get(&DataKey::AvailableShares).unwrap_or(0);
+    total.saturating_sub(available)
+}
+
+/// Settle `holder`'s accrued distribution into their pending balance.
+///
+/// Must be called *before* any change to `holder`'s share balance so that
+/// entitlements are always computed against the balance the holder actually
+/// had while the accumulator moved (claim-after-transfer correctness).
+fn _settle_distribution(env: &Env, holder: &Address) {
+    let acc = _dist_acc(env);
+    let snapshot: i128 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::DistributionSnapshot(holder.clone()))
+        .unwrap_or(0);
+    if acc <= snapshot {
+        return;
+    }
+    let balance: u32 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::Balance(holder.clone()))
+        .unwrap_or(0);
+    let delta = checked_sub_i128(acc, snapshot);
+    let earned = checked_mul_i128(balance as i128, delta) / DIST_SCALE;
+    if earned > 0 {
+        let pending: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DistributionPending(holder.clone()))
+            .unwrap_or(0);
+        env.storage().persistent().set(
+            &DataKey::DistributionPending(holder.clone()),
+            &checked_add_i128(pending, earned),
+        );
+    }
+    env.storage()
+        .persistent()
+        .set(&DataKey::DistributionSnapshot(holder.clone()), &acc);
+}
+
+/// Panic while there is any unclaimed money denominated in `token` still owed
+/// by the contract (Issue #679 safety check for payment-token migration).
+fn _assert_no_outstanding_unclaimed(env: &Env, token: &Address) {
+    let client = token::TokenClient::new(env, token);
+    let contract_addr = env.current_contract_address();
+    if client.balance(&contract_addr) > 0 {
+        panic!("Outstanding unclaimed funds held in the current payment token");
+    }
+
+    let holders: Vec<Address> = env
+        .storage()
+        .instance()
+        .get(&DataKey::Holders)
+        .unwrap_or_else(|| Vec::new(env));
+    let policy: Option<DividendPolicy> = env.storage().instance().get(&DataKey::DividendPolicy);
+    for holder in holders.iter() {
+        let pending: i128 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::DistributionPending(holder.clone()))
+            .unwrap_or(0);
+        if pending > 0 {
+            panic!("Outstanding unclaimed distribution in the current payment token");
+        }
+        if let Some(policy) = policy.clone() {
+            if policy.payout_token == *token {
+                let position = _load_dividend_position(env, &holder);
+                if position.accrued_amount > 0 {
+                    panic!("Outstanding unclaimed dividends in the current payment token");
+                }
+            }
+        }
+    }
+}
+
+// ── Whitelist / dividend storage helpers ─────────────────────────────────
+
+/// Composite whitelist status for an address (flag, expiry, tier).
+fn _get_whitelist_info(env: &Env, addr: &Address) -> WhitelistInfo {
+    let flagged = env
+        .storage()
+        .persistent()
+        .get::<DataKey, bool>(&DataKey::Whitelisted(addr.clone()))
+        .unwrap_or(false);
+    let expiry: u64 = env
+        .storage()
+        .persistent()
+        .get::<DataKey, u64>(&DataKey::WhitelistExpiry(addr.clone()))
+        .unwrap_or(0);
+    let tier: u32 = env
+        .storage()
+        .persistent()
+        .get::<DataKey, u32>(&DataKey::WhitelistTier(addr.clone()))
+        .unwrap_or(0);
+    let expired = expiry > 0 && env.ledger().timestamp() >= expiry;
+    WhitelistInfo { whitelisted: flagged && !expired, expiry, tier }
+}
+
+/// Load a holder's dividend position, defaulting to an empty one.
+fn _load_dividend_position(env: &Env, holder: &Address) -> DividendPosition {
+    env.storage()
+        .persistent()
+        .get(&DataKey::DividendPosition(holder.clone()))
+        .unwrap_or(DividendPosition {
+            accrued_amount: 0,
+            claimed_amount: 0,
+            reinvestment_enabled: false,
+            last_update_ledger: 0,
+        })
+}
+
+/// Persist a holder's dividend position.
+fn _store_dividend_position(env: &Env, holder: &Address, position: &DividendPosition) {
+    env.storage().persistent().set(&DataKey::DividendPosition(holder.clone()), position);
+}
+
+/// Return the configured dividend policy, or a default cash policy paying out
+/// in `token` (the payment token) with no withholding.
+fn _resolve_dividend_policy(env: &Env, token: &Address) -> DividendPolicy {
+    if let Some(policy) = env.storage().instance().get::<DataKey, DividendPolicy>(&DataKey::DividendPolicy) {
+        return policy;
+    }
+    DividendPolicy {
+        dividend_type: DIVIDEND_TYPE_CASH,
+        payout_token: token.clone(),
+        withholding_bps: 0,
+        reinvestment_enabled: false,
+    }
+}
+
+/// Pro-rata slice of `total_amount` owed to `holder_shares` out of
+/// `total_shares`. Integer division truncates, so the sum of all slices never
+/// exceeds `total_amount`.
+fn _calculate_pro_rata_amount(total_amount: i128, holder_shares: u32, total_shares: u32) -> i128 {
+    if total_amount <= 0 || holder_shares == 0 || total_shares == 0 {
+        return 0;
+    }
+    checked_mul_i128(total_amount, holder_shares as i128) / (total_shares as i128)
+}
+
+/// Load the full dividend history.
+fn _load_dividend_history(env: &Env) -> Vec<DividendHistoryEntry> {
+    env.storage()
+        .persistent()
+        .get(&DataKey::DividendHistory)
+        .unwrap_or_else(|| Vec::new(env))
+}
+
+/// Persist the full dividend history.
+fn _store_dividend_history(env: &Env, history: &Vec<DividendHistoryEntry>) {
+    env.storage().persistent().set(&DataKey::DividendHistory, history);
+}
+
+/// Return the next dividend history id and advance the counter.
+fn _get_next_dividend_history_id(env: &Env) -> u64 {
+    let next: u64 = env
+        .storage()
+        .persistent()
+        .get(&DataKey::DividendHistoryCounter)
+        .unwrap_or(0);
+    env.storage().persistent().set(&DataKey::DividendHistoryCounter, &(next + 1));
+    next
+}
+
+/// Reject dividend types the contract does not implement.
+fn _validate_dividend_type(dividend_type: u32) {
+    if dividend_type != DIVIDEND_TYPE_CASH && dividend_type != DIVIDEND_TYPE_TOKEN_BASED {
+        panic!("Unsupported dividend type");
+    }
 }
 
 /// Reentrancy guard - set to true when entering a function, false when exiting
@@ -1083,6 +1322,10 @@ impl RwaMarketplace {
             .instance()
             .set(&DataKey::AvailableShares, &new_available);
 
+        // Issue #765: settle the buyer's accrued distribution on the old
+        // balance before it grows with this purchase.
+        _settle_distribution(&env, &buyer);
+
         let new_balance = prospective_balance;
         env.storage()
             .persistent()
@@ -1339,6 +1582,85 @@ impl RwaMarketplace {
         panic!("Payment token not accepted");
     }
 
+    /// Issue #679: migrate the marketplace to a new default payment token.
+    ///
+    /// Admin only, and only callable while the marketplace is paused so that
+    /// no purchase can be in flight while the token changes. The migration
+    /// is rejected unless every obligation denominated in the outgoing token
+    /// has been fully settled: the contract must custody no balance of the
+    /// old token and no holder may still have unclaimed distribution or
+    /// dividend funds in it (see `_assert_no_outstanding_unclaimed`).
+    ///
+    /// The outgoing token is swapped for the new one inside the accepted
+    /// payment token list, so the multi-asset list kept by
+    /// `add_payment_token` / `remove_payment_token` stays consistent with
+    /// the default token used for pricing, escrow and payouts.
+    pub fn update_payment_token(env: Env, new_payment_token: Address) {
+        let admin: Address = env.storage().instance().get(&DataKey::Admin)
+            .expect("Contract not initialized: admin");
+        admin.require_auth();
+
+        let paused: bool = env.storage().instance().get(&DataKey::Paused).unwrap_or(false);
+        if !paused {
+            panic!("Marketplace must be paused before updating the payment token");
+        }
+
+        if env.storage().instance().get(&DataKey::Delisted).unwrap_or(false) {
+            panic!("Cannot update the payment token of a delisted asset");
+        }
+
+        let old_payment_token: Address = env.storage().instance().get(&DataKey::PaymentToken)
+            .expect("Contract not initialized: payment token");
+
+        if old_payment_token == new_payment_token {
+            panic!("New payment token is already the payment token");
+        }
+
+        // Issue #636 style validation: the new token must be a deployed token contract.
+        let new_token_client = token::TokenClient::new(&env, &new_payment_token);
+        new_token_client.symbol();
+
+        // Safety check: nothing unclaimed may be left behind in the old token.
+        _assert_no_outstanding_unclaimed(&env, &old_payment_token);
+
+        env.storage().instance().set(&DataKey::PaymentToken, &new_payment_token);
+
+        // Swap the outgoing token for the new one in the accepted list while
+        // preserving any additional accepted tokens.
+        let accepted: Vec<Address> = env.storage().instance()
+            .get(&DataKey::AcceptedTokens)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut updated: Vec<Address> = Vec::new(&env);
+        let mut replaced = false;
+        for t in accepted.iter() {
+            if t == old_payment_token {
+                if !replaced {
+                    updated.push_back(new_payment_token.clone());
+                    replaced = true;
+                }
+            } else {
+                updated.push_back(t);
+            }
+        }
+        if !replaced {
+            updated.push_back(new_payment_token.clone());
+        }
+        env.storage().instance().set(&DataKey::AcceptedTokens, &updated);
+
+        EventUpdatePaymentToken {
+            admin,
+            old_payment_token,
+            new_payment_token,
+        }.publish(&env);
+    }
+
+    /// Issue #679: return the default payment token used for pricing,
+    /// escrow and payouts.
+    pub fn get_payment_token(env: Env) -> Address {
+        env.storage().instance().get(&DataKey::PaymentToken)
+            .expect("Contract not initialized: payment token")
+    }
+
     /// Distribute `total_amount` of `token` pro-rata among all current holders
     /// based on their share count relative to total issued shares.
     ///
@@ -1544,6 +1866,136 @@ impl RwaMarketplace {
         _load_dividend_history(&env).len() as u32
     }
 
+    // ── Issue #765: Pull-based income / dividend distribution ─────────────
+
+    /// Deposit `amount` of the payment token as income generated by the
+    /// underlying asset for pro-rata distribution to current shareholders.
+    /// Admin only.
+    ///
+    /// Uses the standard pull-based accumulator pattern: the deposit raises a
+    /// single global "token units per share" accumulator instead of iterating
+    /// over holders, so a deposit costs O(1) regardless of holder count.
+    /// Holders settle their own entitlement lazily (on `claim_distribution`
+    /// or whenever their balance changes) and claim it in O(1).
+    ///
+    /// The contract must custody the deposited tokens: if its payment token
+    /// balance does not already cover all outstanding claims plus this
+    /// deposit, the shortfall is pulled from the admin (`admin.require_auth()`).
+    pub fn deposit_distribution(env: Env, amount: i128) {
+        _check_non_reentrant(&env);
+
+        let admin: Address = env.storage().instance().get(&DataKey::Admin)
+            .expect("Contract not initialized: admin");
+        admin.require_auth();
+
+        if amount <= 0 {
+            _set_non_reentrant(&env, false);
+            panic!("Distribution amount must be positive");
+        }
+
+        let issued_shares = _issued_shares(&env);
+        if issued_shares == 0 {
+            _set_non_reentrant(&env, false);
+            panic!("No shares have been issued");
+        }
+
+        let token_id: Address = env.storage().instance()
+            .get(&DataKey::PaymentToken)
+            .expect("Contract not initialized: payment token");
+        let client = token::TokenClient::new(&env, &token_id);
+        let contract_addr = env.current_contract_address();
+
+        // Make sure the contract custodies the deposit. `required` is the new
+        // total of unclaimed funds, so a pre-funded contract (or one that
+        // already holds the amount) needs no transfer from the admin.
+        let unclaimed = _dist_unclaimed(&env);
+        let required = checked_add_i128(unclaimed, amount);
+        let held = client.balance(&contract_addr);
+        if held < required {
+            let shortfall = checked_sub_i128(required, held);
+            client.transfer(&admin, &contract_addr, &shortfall);
+        }
+
+        let acc = _dist_acc(&env);
+        let increment = checked_mul_i128(amount, DIST_SCALE) / (issued_shares as i128);
+        env.storage().instance().set(&DataKey::DistributionAcc, &checked_add_i128(acc, increment));
+        env.storage().instance().set(&DataKey::DistributionUnclaimed, &required);
+
+        _set_non_reentrant(&env, false);
+
+        EventDistributionDeposited {
+            admin,
+            token: token_id,
+            amount,
+            issued_shares,
+        }.publish(&env);
+    }
+
+    /// Claim every distribution amount accrued to `holder` since their last
+    /// settlement (Issue #765). Shareholder-callable: `holder` must authorize.
+    pub fn claim_distribution(env: Env, holder: Address) {
+        _check_non_reentrant(&env);
+        holder.require_auth();
+
+        _settle_distribution(&env, &holder);
+
+        let pending: i128 = env.storage().persistent()
+            .get(&DataKey::DistributionPending(holder.clone()))
+            .unwrap_or(0);
+        if pending <= 0 {
+            _set_non_reentrant(&env, false);
+            panic!("No distribution available to claim");
+        }
+
+        let token_id: Address = env.storage().instance()
+            .get(&DataKey::PaymentToken)
+            .expect("Contract not initialized: payment token");
+        let client = token::TokenClient::new(&env, &token_id);
+        let contract_addr = env.current_contract_address();
+
+        env.storage().persistent().set(&DataKey::DistributionPending(holder.clone()), &0i128);
+        let unclaimed = checked_sub_i128(_dist_unclaimed(&env), pending);
+        env.storage().instance().set(&DataKey::DistributionUnclaimed, &unclaimed);
+
+        client.transfer(&contract_addr, &holder, &pending);
+
+        _set_non_reentrant(&env, false);
+
+        EventDistributionClaimed {
+            holder,
+            token: token_id,
+            amount: pending,
+        }.publish(&env);
+    }
+
+    /// Return the distribution amount `holder` can claim right now.
+    /// Read-only: never gated by `pause` (Issue #698).
+    pub fn get_pending_distribution(env: Env, holder: Address) -> i128 {
+        let mut pending: i128 = env.storage().persistent()
+            .get(&DataKey::DistributionPending(holder.clone()))
+            .unwrap_or(0);
+        let acc = _dist_acc(&env);
+        let snapshot: i128 = env.storage().persistent()
+            .get(&DataKey::DistributionSnapshot(holder.clone()))
+            .unwrap_or(0);
+        if acc > snapshot {
+            let balance: u32 = env.storage().persistent()
+                .get(&DataKey::Balance(holder))
+                .unwrap_or(0);
+            let delta = checked_sub_i128(acc, snapshot);
+            pending = checked_add_i128(
+                pending,
+                checked_mul_i128(balance as i128, delta) / DIST_SCALE,
+            );
+        }
+        pending
+    }
+
+    /// Issue #765: total deposited but not yet claimed distribution amount.
+    pub fn get_unclaimed_distribution(env: Env) -> i128 {
+        _dist_unclaimed(&env)
+    }
+
     /// Register a holder if not already present.
     fn register_holder(env: &Env, owner: Address) {
         let mut holders: Vec<Address> = env
@@ -1717,6 +2169,9 @@ impl RwaMarketplace {
         if total_claimable == 0 {
             panic!("No vested shares available to claim");
         }
+
+        // Issue #765: settle accrued distribution on the pre-claim balance.
+        _settle_distribution(&env, &claimer);
 
         let prev_balance: u32 = env
             .storage()
@@ -2095,6 +2550,8 @@ impl RwaMarketplace {
                     .persistent()
                     .get(&DataKey::Balance(order.seller.clone()))
                     .unwrap_or(0);
+                // Issue #765: settle accrued distribution on the pre-escrow balance.
+                _settle_distribution(&env, &order.seller);
                 env.storage().persistent().set(
                     &DataKey::Balance(order.seller.clone()),
                     &checked_add_u32(balance, order.amount),
@@ -3157,6 +3614,11 @@ impl RwaMarketplace {
             }
         }
 
+        // Issue #765: settle accrued distribution on both sides while the
+        // old balances are still in place (claim-after-transfer correctness).
+        _settle_distribution(&env, &from);
+        _settle_distribution(&env, &to);
+
         env.storage()
             .persistent()
             .set(&DataKey::Balance(from.clone()), &checked_sub_u32(from_balance, amount));
@@ -3264,6 +3726,11 @@ impl RwaMarketplace {
             .persistent()
             .set(&allowance_key, &checked_sub_u32(current_allowance, amount));
 
+        // Issue #765: settle accrued distribution on both sides before the
+        // balances change.
+        _settle_distribution(&env, &from);
+        _settle_distribution(&env, &to);
+
         env.storage()
             .persistent()
             .set(&DataKey::Balance(from.clone()), &checked_sub_u32(from_balance, amount));
@@ -3313,6 +3780,8 @@ impl RwaMarketplace {
         }
 
         // Escrow: deduct from seller's liquid balance
+        // Issue #765: settle accrued distribution on the pre-escrow balance.
+        _settle_distribution(&env, &seller);
         env.storage().persistent()
             .set(&DataKey::Balance(seller.clone()), &checked_sub_u32(balance, amount));
 
@@ -3341,6 +3810,8 @@ impl RwaMarketplace {
         // Return escrowed shares
         let balance: u32 = env.storage().persistent()
             .get(&DataKey::Balance(order.seller.clone())).unwrap_or(0);
+        // Issue #765: settle accrued distribution on the pre-escrow balance.
+        _settle_distribution(&env, &order.seller);
         env.storage().persistent()
             .set(&DataKey::Balance(order.seller.clone()), &checked_add_u32(balance, order.amount));
 
@@ -3395,6 +3866,8 @@ impl RwaMarketplace {
         // Credit buyer's liquid balance
         let buyer_balance: u32 = env.storage().persistent()
             .get(&DataKey::Balance(buyer.clone())).unwrap_or(0);
+        // Issue #765: settle accrued distribution on the buyer's old balance.
+        _settle_distribution(&env, &buyer);
         env.storage().persistent()
             .set(&DataKey::Balance(buyer.clone()), &checked_add_u32(buyer_balance, amount));
         Self::register_holder(&env, buyer.clone());
@@ -3504,6 +3977,9 @@ impl RwaMarketplace {
             let recipient = recipients.get(i).unwrap();
 
             let to_balance: u32 = env.storage().persistent().get(&DataKey::Balance(recipient.clone())).unwrap_or(0);
+            // Issue #765: settle the recipient's accrued distribution on the
+            // balance they held before this credit.
+            _settle_distribution(&env, &recipient);
             env.storage().persistent().set(&DataKey::Balance(recipient.clone()), &checked_add_u32(to_balance, amount));
             Self::register_holder(&env, recipient.clone());
 
@@ -3519,6 +3995,8 @@ impl RwaMarketplace {
         }
 
         // Deduct from sender balance
+        // Issue #765: settle the sender's accrued distribution first.
+        _settle_distribution(&env, &from);
         env.storage().persistent().set(&DataKey::Balance(from.clone()), &checked_sub_u32(from_balance, total_amount));
 
         // Collect total fee
@@ -3700,6 +4178,7 @@ impl RwaMarketplace {
             .transfer(&env.current_contract_address(), &seller, &total_cost);
 
         // Reduce seller balance
+        _settle_distribution(&env, &seller);
         env.storage().persistent().set(
             &DataKey::Balance(seller.clone()),
             &checked_sub_u32(seller_balance, amount),
@@ -4103,6 +4582,9 @@ impl RwaMarketplace {
         }
 
         // ── Persist aggregated state changes ─────────────────────────
+        // Issue #765: settle the buyer's accrued distribution on the balance
+        // they held before the batch of purchases.
+        _settle_distribution(&env, &buyer);
         env.storage()
             .instance()
             .set(&DataKey::AvailableShares, &available);
@@ -7821,6 +8303,8 @@ impl RwaMarketplace {
         }
 
         // Debit liquid balance
+        // Issue #765: settle accrued distribution on the pre-lock balance.
+        _settle_distribution(&env, &user);
         let new_balance = checked_sub_u32(balance, amount);
         env.storage()
             .persistent()
@@ -7880,6 +8364,8 @@ impl RwaMarketplace {
             .set(&DataKey::BridgeLocked(user.clone()), &new_locked);
 
         // Credit liquid balance
+        // Issue #765: settle accrued distribution on the pre-unlock balance.
+        _settle_distribution(&env, &user);
         let balance: u32 = env
             .storage()
             .persistent()
