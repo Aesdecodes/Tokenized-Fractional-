@@ -288,6 +288,8 @@ pub enum DataKey {
 
     AssetPause(u64),
 
+    AcquiredAt(u64, Address),
+
 }
 
 
@@ -1295,6 +1297,14 @@ impl MultiAssetManager {
 
             env.storage().persistent().set(&DataKey::AssetHolders(asset_id), &holders);
 
+            // Record per-holder acquisition time (#938)
+
+            env.storage().persistent().set(
+                &DataKey::AcquiredAt(asset_id, buyer.clone()),
+
+                &env.ledger().timestamp(),
+
+            );
 
         }
 
@@ -1426,19 +1436,24 @@ impl MultiAssetManager {
             .expect("Restrictions not found");
 
 
-        // Check lockup
+        // Check lockup (#938): use per-holder acquisition time instead of
+        // the asset-wide last_trade_at timestamp.
 
         if restrictions.transfer_lockup_days > 0 {
 
-            let analytics: AssetAnalytics = env.storage().persistent()
-
-                .get(&DataKey::AssetAnalytics(asset_id))
-
-                .expect("Analytics not found");
-
             let lockup_seconds = (restrictions.transfer_lockup_days as u64) * 86400;
 
-            if analytics.last_trade_at > 0 && env.ledger().timestamp() < analytics.last_trade_at.saturating_add(lockup_seconds) {
+            let acquired_at: u64 = env.storage().persistent()
+
+                .get(&DataKey::AcquiredAt(asset_id, from.clone()))
+
+                .unwrap_or(0);
+
+            if acquired_at > 0
+
+                && env.ledger().timestamp() < acquired_at.saturating_add(lockup_seconds)
+
+            {
 
                 panic_with_error!(&env, Error::NotAuthorized);
 
