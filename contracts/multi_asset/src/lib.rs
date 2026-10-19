@@ -59,6 +59,8 @@ pub enum Error {
 
     RestrictedJurisdiction = 24,
 
+    AssetPaused = 25,
+
 }
 
 
@@ -279,6 +281,12 @@ pub enum DataKey {
     AccreditedInvestor(Address),
 
     BuyerJurisdiction(Address),
+
+    CircuitBreakerTriggered,
+
+    CircuitBreakerConfig,
+
+    AssetPause(u64),
 
 }
 
@@ -1055,7 +1063,7 @@ impl MultiAssetManager {
 
     // -- Buy / Transfer Shares -----------------------------------
 
-    pub fn buy_asset_shares(env: Env, asset_id: u64, buyer: Address, amount: u32) {
+    pub fn buy_asset_shares(env: Env, asset_id: u64, buyer: Address, amount: u32, max_price_per_share: i128) {
 
         buyer.require_auth();
 
@@ -1185,6 +1193,37 @@ impl MultiAssetManager {
         }
 
 
+        // Safety controls (#937)
+
+        // Circuit breaker check
+
+        let breaker_triggered: bool = env.storage().instance()
+
+            .get(&DataKey::CircuitBreakerTriggered)
+
+            .unwrap_or(false);
+
+        if breaker_triggered {
+
+            panic_with_error!(&env, Error::AssetPaused);
+
+        }
+
+        // Asset-specific pause check
+
+        let asset_paused: bool = env.storage().instance()
+
+            .get(&DataKey::AssetPause(asset_id))
+
+            .unwrap_or(false);
+
+        if asset_paused {
+
+            panic_with_error!(&env, Error::AssetPaused);
+
+        }
+
+
         let pricing: AssetPricing = env.storage().persistent()
 
             .get(&DataKey::AssetPricing(asset_id))
@@ -1193,6 +1232,15 @@ impl MultiAssetManager {
 
 
         let total_cost = checked_mul_i128(&env, pricing.fixed_price, amount as i128);
+
+
+        // Slippage protection: reject if configured price exceeds buyer's max
+
+        if pricing.fixed_price > max_price_per_share {
+
+            panic_with_error!(&env, Error::InvalidPricingModel);
+
+        }
 
 
         // --- Effects: update all contract state BEFORE any external call ---
@@ -1960,7 +2008,7 @@ mod tests {
 
         // Buy shares
 
-        client.buy_asset_shares(&id, &buyer, &100);
+        client.buy_asset_shares(&id, &buyer, &100, &i128::MAX);
 
 
         let balance = client.get_asset_balance(&id, &buyer);
@@ -2024,7 +2072,7 @@ mod tests {
 
         soroban_sdk::token::StellarAssetClient::new(&env, &payment_token).mint(&owner, &5000i128);
 
-        client.buy_asset_shares(&id, &owner, &100);
+        client.buy_asset_shares(&id, &owner, &100, &i128::MAX);
         client.burn_and_reconstitute(&id, &owner);
 
         assert_eq!(client.get_asset_balance(&id, &owner), 0);
@@ -2082,7 +2130,7 @@ mod tests {
 
         soroban_sdk::token::StellarAssetClient::new(&env, &payment_token).mint(&owner, &5000i128);
 
-        client.buy_asset_shares(&id, &owner, &99);
+        client.buy_asset_shares(&id, &owner, &99, &i128::MAX);
         client.burn_and_reconstitute(&id, &owner);
 
     }
@@ -2118,7 +2166,7 @@ mod tests {
         let sac = soroban_sdk::token::StellarAssetClient::new(&env, &payment_token);
         sac.mint(&buyer, &100000i128);
 
-        client.buy_asset_shares(&id, &buyer, &200);
+        client.buy_asset_shares(&id, &buyer, &200, &i128::MAX);
 
 
         let recipient = Address::generate(&env);
