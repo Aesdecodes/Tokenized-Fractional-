@@ -648,6 +648,18 @@ impl MultiAssetManager {
 
         approvers: Vec<Address>,
 
+        requires_kyc: bool,
+
+        requires_accreditation: bool,
+
+        min_investment: u32,
+
+        max_per_investor: u32,
+
+        transfer_lockup_days: u32,
+
+        restricted_jurisdictions: Vec<String>,
+
     ) -> u64 {
 
         let admin: Address = Self::get_admin(env.clone());
@@ -728,17 +740,17 @@ impl MultiAssetManager {
 
         let restrictions = AssetRestrictions {
 
-            requires_kyc: false,
+            requires_kyc,
 
-            min_investment: 1,
+            min_investment,
 
-            max_per_investor: 0,
+            max_per_investor,
 
-            restricted_jurisdictions: Vec::new(&env),
+            restricted_jurisdictions,
 
-            transfer_lockup_days: 0,
+            transfer_lockup_days,
 
-            requires_accreditation: false,
+            requires_accreditation,
 
         };
 
@@ -1586,6 +1598,18 @@ mod tests {
 
             &approvers,
 
+            &false,
+
+            &false,
+
+            &0u32,
+
+            &0u32,
+
+            &0u32,
+
+            &Vec::<String>::new(&env),
+
         );
 
 
@@ -1653,6 +1677,18 @@ mod tests {
 
                 &approvers,
 
+                &false,
+
+                &false,
+
+                &0u32,
+
+                &0u32,
+
+                &0u32,
+
+                &Vec::<String>::new(&env),
+
             );
 
             assert_eq!(asset_id, i as u64);
@@ -1685,7 +1721,7 @@ mod tests {
 
         let approvers = approval_vec(&env, &[&c1, &c2]);
 
-        let id = client.register_asset(&name, &AssetType::Debt, &meta, &1000u32, &PricingModel::Fixed, &200i128, &payment_token, &treasury, &approvers);
+        let id = client.register_asset(&name, &AssetType::Debt, &meta, &1000u32, &PricingModel::Fixed, &200i128, &payment_token, &treasury, &approvers, &false, &false, &0u32, &0u32, &0u32, &Vec::<String>::new(&env));
 
 
         // Draft -> Active
@@ -1742,7 +1778,7 @@ mod tests {
 
         let approvers = approval_vec(&env, &[&c1, &c2]);
 
-        let id = client.register_asset(&name, &AssetType::Equity, &meta, &500u32, &PricingModel::Fixed, &100i128, &payment_token, &treasury, &approvers);
+        let id = client.register_asset(&name, &AssetType::Equity, &meta, &500u32, &PricingModel::Fixed, &100i128, &payment_token, &treasury, &approvers, &false, &false, &0u32, &0u32, &0u32, &Vec::<String>::new(&env));
 
 
         let thresholds = Vec::new(&env);
@@ -1781,7 +1817,7 @@ mod tests {
 
         let approvers = approval_vec(&env, &[&c1, &c2]);
 
-        let id = client.register_asset(&name, &AssetType::RealEstate, &meta, &1000u32, &PricingModel::Fixed, &50i128, &payment_token, &treasury, &approvers);
+        let id = client.register_asset(&name, &AssetType::RealEstate, &meta, &1000u32, &PricingModel::Fixed, &50i128, &payment_token, &treasury, &approvers, &false, &false, &0u32, &0u32, &0u32, &Vec::<String>::new(&env));
 
 
         // Activate
@@ -1849,6 +1885,12 @@ mod tests {
             &payment_token,
             &treasury,
             &approvers,
+            &false,
+            &false,
+            &0u32,
+            &0u32,
+            &0u32,
+            &Vec::<String>::new(&env),
         );
 
         client.activate_asset(&id);
@@ -1901,6 +1943,12 @@ mod tests {
             &payment_token,
             &treasury,
             &approvers,
+            &false,
+            &false,
+            &0u32,
+            &0u32,
+            &0u32,
+            &Vec::<String>::new(&env),
         );
 
         client.activate_asset(&id);
@@ -1935,7 +1983,7 @@ mod tests {
 
         let approvers = approval_vec(&env, &[&c1, &c2]);
 
-        let id = client.register_asset(&name, &AssetType::RealEstate, &meta, &1000u32, &PricingModel::Fixed, &50i128, &payment_token, &treasury, &approvers);
+        let id = client.register_asset(&name, &AssetType::RealEstate, &meta, &1000u32, &PricingModel::Fixed, &50i128, &payment_token, &treasury, &approvers, &false, &false, &0u32, &0u32, &0u32, &Vec::<String>::new(&env));
 
         client.activate_asset(&id);
 
@@ -1976,7 +2024,7 @@ mod tests {
 
         let approvers = approval_vec(&env, &[&c1, &c2]);
 
-        let id = client.register_asset(&name, &AssetType::Equity, &meta, &1000u32, &PricingModel::Fixed, &100i128, &payment_token, &treasury, &approvers);
+        let id = client.register_asset(&name, &AssetType::Equity, &meta, &1000u32, &PricingModel::Fixed, &100i128, &payment_token, &treasury, &approvers, &false, &false, &0u32, &0u32, &0u32, &Vec::<String>::new(&env));
 
 
         let restricted = AssetRestrictions {
@@ -2074,7 +2122,7 @@ mod tests {
 
             let approvers = approval_vec(&env, &[&c1, &c2]);
 
-            let id = client.register_asset(&name, &AssetType::Other, &meta, &100u32, &PricingModel::Fixed, &10i128, &payment_token, &treasury, &approvers);
+            let id = client.register_asset(&name, &AssetType::Other, &meta, &100u32, &PricingModel::Fixed, &10i128, &payment_token, &treasury, &approvers, &false, &false, &0u32, &0u32, &0u32, &Vec::<String>::new(&env));
 
             if i % 2 == 0 {
 
@@ -2131,6 +2179,18 @@ mod tests {
 
             &approvers,
 
+            &false,
+
+            &false,
+
+            &0u32,
+
+            &0u32,
+
+            &0u32,
+
+            &Vec::<String>::new(&env),
+
         );
 
         assert_eq!(id, 1);
@@ -2176,6 +2236,18 @@ mod tests {
 
             &approvers,
 
+            &false,
+
+            &false,
+
+            &0u32,
+
+            &0u32,
+
+            &0u32,
+
+            &Vec::<String>::new(&env),
+
         );
 
         assert_eq!(id, 1);
@@ -2219,6 +2291,18 @@ mod tests {
 
             &approvers,
 
+            &false,
+
+            &false,
+
+            &0u32,
+
+            &0u32,
+
+            &0u32,
+
+            &Vec::<String>::new(&env),
+
         );
 
     }
@@ -2259,6 +2343,18 @@ mod tests {
             &treasury,
 
             &approvers,
+
+            &false,
+
+            &false,
+
+            &0u32,
+
+            &0u32,
+
+            &0u32,
+
+            &Vec::<String>::new(&env),
 
         );
 
@@ -2302,6 +2398,18 @@ mod tests {
             &treasury,
 
             &approvers,
+
+            &false,
+
+            &false,
+
+            &0u32,
+
+            &0u32,
+
+            &0u32,
+
+            &Vec::<String>::new(&env),
 
         );
 
@@ -2375,6 +2483,18 @@ mod tests {
             &treasury,
 
             &approvers,
+
+            &false,
+
+            &false,
+
+            &0u32,
+
+            &0u32,
+
+            &0u32,
+
+            &Vec::<String>::new(&env),
 
         );
 
