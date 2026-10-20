@@ -1,3 +1,16 @@
+
+// Content-Type: application/json enforcement middleware (#782)
+const requireJsonContentType = (req, res, next) => {
+  const contentType = req.headers["content-type"];
+  if (!contentType || !contentType.toLowerCase().includes("application/json")) {
+    return res.status(415).json({
+      error: "Unsupported Media Type",
+      message: "Requests to write endpoints must specify Content-Type: application/json"
+    });
+  }
+  next();
+};
+
 // Copyright (c) 2026 Tokenized Fractional RWA Marketplace Contributors
 // SPDX-License-Identifier: MIT
 
