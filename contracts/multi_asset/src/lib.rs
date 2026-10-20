@@ -47,6 +47,8 @@ pub enum Error {
 
     NotACurator = 18,
 
+    ReentrantCall = 19,
+
 }
 
 
@@ -259,6 +261,8 @@ pub enum DataKey {
     OracleAddress,
 
     Curators,
+
+    ReentrantGuard,
 
 }
 
@@ -1032,7 +1036,18 @@ impl MultiAssetManager {
 
             panic_with_error!(&env, Error::InvalidAmount);
 
+
         }
+
+        // Reentrancy guard (#934)
+
+        if env.storage().instance().get(&DataKey::ReentrantGuard).unwrap_or(false) {
+
+            panic_with_error!(&env, Error::ReentrantCall);
+
+        }
+
+        env.storage().instance().set(&DataKey::ReentrantGuard, &true);
 
 
         let info = env.storage().persistent()
@@ -1046,12 +1061,14 @@ impl MultiAssetManager {
 
             panic_with_error!(&env, Error::AssetArchived);
 
+
         }
 
 
         if amount > info.available_supply {
 
             panic_with_error!(&env, Error::InsufficientShares);
+
 
         }
 
@@ -1066,12 +1083,7 @@ impl MultiAssetManager {
         let total_cost = checked_mul_i128(&env, pricing.fixed_price, amount as i128);
 
 
-        // Transfer payment from buyer to treasury
-
-        let client = soroban_sdk::token::Client::new(&env, &info.payment_token);
-
-        client.transfer(&buyer, &info.treasury, &total_cost);
-
+        // --- Effects: update all contract state BEFORE any external call ---
 
         // Update supplies
 
@@ -1123,6 +1135,7 @@ impl MultiAssetManager {
 
             env.storage().persistent().set(&DataKey::AssetHolders(asset_id), &holders);
 
+
         }
 
 
@@ -1145,6 +1158,18 @@ impl MultiAssetManager {
         analytics.buy_count += 1;
 
         env.storage().persistent().set(&DataKey::AssetAnalytics(asset_id), &analytics);
+
+
+        // --- Interaction: external token transfer happens last (#934 CEI) ---
+
+        let client = soroban_sdk::token::Client::new(&env, &info.payment_token);
+
+        client.transfer(&buyer, &info.treasury, &total_cost);
+
+
+        // Release reentrancy guard
+
+        env.storage().instance().set(&DataKey::ReentrantGuard, &false);
 
 
         EventAssetSharesBought { asset_id, buyer, amount, total_cost }.publish(&env);
