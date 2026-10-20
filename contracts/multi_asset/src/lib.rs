@@ -290,6 +290,8 @@ pub enum DataKey {
 
     AcquiredAt(u64, Address),
 
+    IsHolder(u64, Address),
+
 }
 
 
@@ -1269,33 +1271,34 @@ impl MultiAssetManager {
         env.storage().persistent().set(&DataKey::AssetBalance(asset_id, buyer.clone()), &new_balance);
 
 
-        // Register holder if new
+        // Register holder if new (#939): O(1) IsHolder flag instead of
+        // scanning/rewriting the full AssetHolders vector.
 
-        let mut holders: Vec<Address> = env.storage().persistent()
+        let is_new_holder: bool = !env.storage().persistent()
 
-            .get(&DataKey::AssetHolders(asset_id))
+            .get(&DataKey::IsHolder(asset_id, buyer.clone()))
 
-            .unwrap_or_else(|| Vec::new(&env));
-
-        let mut is_new_holder = true;
-
-        for h in holders.iter() {
-
-            if h == buyer {
-
-                is_new_holder = false;
-
-                break;
-
-            }
-
-        }
+            .unwrap_or(false);
 
         if is_new_holder {
+
+            env.storage().persistent().set(
+                &DataKey::IsHolder(asset_id, buyer.clone()),
+
+                &true,
+
+            );
+
+            let mut holders: Vec<Address> = env.storage().persistent()
+
+                .get(&DataKey::AssetHolders(asset_id))
+
+                .unwrap_or_else(|| Vec::new(&env));
 
             holders.push_back(buyer.clone());
 
             env.storage().persistent().set(&DataKey::AssetHolders(asset_id), &holders);
+
 
             // Record per-holder acquisition time (#938)
 
