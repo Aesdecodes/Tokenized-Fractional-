@@ -1239,7 +1239,7 @@ v1.get('/rwa/:contractId', getAssetMetadata);
  *             contractId: 'CCF7LXM6U6H6Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z'
  *             title: 'Luxury Manhattan Condo Unit 12B'
  *             location: 'New York, NY'
- *             description: 'A fully furnished 2-bedroom condo'
+ *             description: "Tokenized Fractional RWA REST API. See the [API Changelog](https://github.com/Code-Paragon/Tokenized-Fractional-/blob/main/docs/api-changelog.md) for version history and updates."
  *             assetType: 'real_estate'
  *             imageUrl: 'https://ipfs.io/ipfs/QmX...'
  *             totalValuation: '2500000.00'
