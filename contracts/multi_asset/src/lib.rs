@@ -59,6 +59,8 @@ pub enum Error {
 
     RestrictedJurisdiction = 24,
 
+    AssetPaused = 25,
+
 }
 
 
@@ -279,6 +281,12 @@ pub enum DataKey {
     AccreditedInvestor(Address),
 
     BuyerJurisdiction(Address),
+
+    CircuitBreakerTriggered,
+
+    CircuitBreakerConfig,
+
+    AssetPause(u64),
 
 }
 
@@ -668,6 +676,18 @@ impl MultiAssetManager {
 
         approvers: Vec<Address>,
 
+        requires_kyc: bool,
+
+        requires_accreditation: bool,
+
+        min_investment: u32,
+
+        max_per_investor: u32,
+
+        transfer_lockup_days: u32,
+
+        restricted_jurisdictions: Vec<String>,
+
     ) -> u64 {
 
         let admin: Address = Self::get_admin(env.clone());
@@ -748,17 +768,17 @@ impl MultiAssetManager {
 
         let restrictions = AssetRestrictions {
 
-            requires_kyc: false,
+            requires_kyc,
 
-            min_investment: 1,
+            min_investment,
 
-            max_per_investor: 0,
+            max_per_investor,
 
-            restricted_jurisdictions: Vec::new(&env),
+            restricted_jurisdictions,
 
-            transfer_lockup_days: 0,
+            transfer_lockup_days,
 
-            requires_accreditation: false,
+            requires_accreditation,
 
         };
 
@@ -1043,7 +1063,7 @@ impl MultiAssetManager {
 
     // -- Buy / Transfer Shares -----------------------------------
 
-    pub fn buy_asset_shares(env: Env, asset_id: u64, buyer: Address, amount: u32) {
+    pub fn buy_asset_shares(env: Env, asset_id: u64, buyer: Address, amount: u32, max_price_per_share: i128) {
 
         buyer.require_auth();
 
@@ -1173,6 +1193,37 @@ impl MultiAssetManager {
         }
 
 
+        // Safety controls (#937)
+
+        // Circuit breaker check
+
+        let breaker_triggered: bool = env.storage().instance()
+
+            .get(&DataKey::CircuitBreakerTriggered)
+
+            .unwrap_or(false);
+
+        if breaker_triggered {
+
+            panic_with_error!(&env, Error::AssetPaused);
+
+        }
+
+        // Asset-specific pause check
+
+        let asset_paused: bool = env.storage().instance()
+
+            .get(&DataKey::AssetPause(asset_id))
+
+            .unwrap_or(false);
+
+        if asset_paused {
+
+            panic_with_error!(&env, Error::AssetPaused);
+
+        }
+
+
         let pricing: AssetPricing = env.storage().persistent()
 
             .get(&DataKey::AssetPricing(asset_id))
@@ -1181,6 +1232,15 @@ impl MultiAssetManager {
 
 
         let total_cost = checked_mul_i128(&env, pricing.fixed_price, amount as i128);
+
+
+        // Slippage protection: reject if configured price exceeds buyer's max
+
+        if pricing.fixed_price > max_price_per_share {
+
+            panic_with_error!(&env, Error::InvalidPricingModel);
+
+        }
 
 
         // --- Effects: update all contract state BEFORE any external call ---
@@ -1711,6 +1771,18 @@ mod tests {
 
             &approvers,
 
+            &false,
+
+            &false,
+
+            &0u32,
+
+            &0u32,
+
+            &0u32,
+
+            &Vec::<String>::new(&env),
+
         );
 
 
@@ -1778,6 +1850,18 @@ mod tests {
 
                 &approvers,
 
+                &false,
+
+                &false,
+
+                &0u32,
+
+                &0u32,
+
+                &0u32,
+
+                &Vec::<String>::new(&env),
+
             );
 
             assert_eq!(asset_id, i as u64);
@@ -1810,7 +1894,7 @@ mod tests {
 
         let approvers = approval_vec(&env, &[&c1, &c2]);
 
-        let id = client.register_asset(&name, &AssetType::Debt, &meta, &1000u32, &PricingModel::Fixed, &200i128, &payment_token, &treasury, &approvers);
+        let id = client.register_asset(&name, &AssetType::Debt, &meta, &1000u32, &PricingModel::Fixed, &200i128, &payment_token, &treasury, &approvers, &false, &false, &0u32, &0u32, &0u32, &Vec::<String>::new(&env));
 
 
         // Draft -> Active
@@ -1867,7 +1951,7 @@ mod tests {
 
         let approvers = approval_vec(&env, &[&c1, &c2]);
 
-        let id = client.register_asset(&name, &AssetType::Equity, &meta, &500u32, &PricingModel::Fixed, &100i128, &payment_token, &treasury, &approvers);
+        let id = client.register_asset(&name, &AssetType::Equity, &meta, &500u32, &PricingModel::Fixed, &100i128, &payment_token, &treasury, &approvers, &false, &false, &0u32, &0u32, &0u32, &Vec::<String>::new(&env));
 
 
         let thresholds = Vec::new(&env);
@@ -1906,7 +1990,7 @@ mod tests {
 
         let approvers = approval_vec(&env, &[&c1, &c2]);
 
-        let id = client.register_asset(&name, &AssetType::RealEstate, &meta, &1000u32, &PricingModel::Fixed, &50i128, &payment_token, &treasury, &approvers);
+        let id = client.register_asset(&name, &AssetType::RealEstate, &meta, &1000u32, &PricingModel::Fixed, &50i128, &payment_token, &treasury, &approvers, &false, &false, &0u32, &0u32, &0u32, &Vec::<String>::new(&env));
 
 
         // Activate
@@ -1924,7 +2008,7 @@ mod tests {
 
         // Buy shares
 
-        client.buy_asset_shares(&id, &buyer, &100);
+        client.buy_asset_shares(&id, &buyer, &100, &i128::MAX);
 
 
         let balance = client.get_asset_balance(&id, &buyer);
@@ -1974,6 +2058,12 @@ mod tests {
             &payment_token,
             &treasury,
             &approvers,
+            &false,
+            &false,
+            &0u32,
+            &0u32,
+            &0u32,
+            &Vec::<String>::new(&env),
         );
 
         client.activate_asset(&id);
@@ -1982,7 +2072,7 @@ mod tests {
 
         soroban_sdk::token::StellarAssetClient::new(&env, &payment_token).mint(&owner, &5000i128);
 
-        client.buy_asset_shares(&id, &owner, &100);
+        client.buy_asset_shares(&id, &owner, &100, &i128::MAX);
         client.burn_and_reconstitute(&id, &owner);
 
         assert_eq!(client.get_asset_balance(&id, &owner), 0);
@@ -2026,6 +2116,12 @@ mod tests {
             &payment_token,
             &treasury,
             &approvers,
+            &false,
+            &false,
+            &0u32,
+            &0u32,
+            &0u32,
+            &Vec::<String>::new(&env),
         );
 
         client.activate_asset(&id);
@@ -2034,7 +2130,7 @@ mod tests {
 
         soroban_sdk::token::StellarAssetClient::new(&env, &payment_token).mint(&owner, &5000i128);
 
-        client.buy_asset_shares(&id, &owner, &99);
+        client.buy_asset_shares(&id, &owner, &99, &i128::MAX);
         client.burn_and_reconstitute(&id, &owner);
 
     }
@@ -2060,7 +2156,7 @@ mod tests {
 
         let approvers = approval_vec(&env, &[&c1, &c2]);
 
-        let id = client.register_asset(&name, &AssetType::RealEstate, &meta, &1000u32, &PricingModel::Fixed, &50i128, &payment_token, &treasury, &approvers);
+        let id = client.register_asset(&name, &AssetType::RealEstate, &meta, &1000u32, &PricingModel::Fixed, &50i128, &payment_token, &treasury, &approvers, &false, &false, &0u32, &0u32, &0u32, &Vec::<String>::new(&env));
 
         client.activate_asset(&id);
 
@@ -2070,7 +2166,7 @@ mod tests {
         let sac = soroban_sdk::token::StellarAssetClient::new(&env, &payment_token);
         sac.mint(&buyer, &100000i128);
 
-        client.buy_asset_shares(&id, &buyer, &200);
+        client.buy_asset_shares(&id, &buyer, &200, &i128::MAX);
 
 
         let recipient = Address::generate(&env);
@@ -2101,7 +2197,7 @@ mod tests {
 
         let approvers = approval_vec(&env, &[&c1, &c2]);
 
-        let id = client.register_asset(&name, &AssetType::Equity, &meta, &1000u32, &PricingModel::Fixed, &100i128, &payment_token, &treasury, &approvers);
+        let id = client.register_asset(&name, &AssetType::Equity, &meta, &1000u32, &PricingModel::Fixed, &100i128, &payment_token, &treasury, &approvers, &false, &false, &0u32, &0u32, &0u32, &Vec::<String>::new(&env));
 
 
         let restricted = AssetRestrictions {
@@ -2199,7 +2295,7 @@ mod tests {
 
             let approvers = approval_vec(&env, &[&c1, &c2]);
 
-            let id = client.register_asset(&name, &AssetType::Other, &meta, &100u32, &PricingModel::Fixed, &10i128, &payment_token, &treasury, &approvers);
+            let id = client.register_asset(&name, &AssetType::Other, &meta, &100u32, &PricingModel::Fixed, &10i128, &payment_token, &treasury, &approvers, &false, &false, &0u32, &0u32, &0u32, &Vec::<String>::new(&env));
 
             if i % 2 == 0 {
 
@@ -2256,6 +2352,18 @@ mod tests {
 
             &approvers,
 
+            &false,
+
+            &false,
+
+            &0u32,
+
+            &0u32,
+
+            &0u32,
+
+            &Vec::<String>::new(&env),
+
         );
 
         assert_eq!(id, 1);
@@ -2301,6 +2409,18 @@ mod tests {
 
             &approvers,
 
+            &false,
+
+            &false,
+
+            &0u32,
+
+            &0u32,
+
+            &0u32,
+
+            &Vec::<String>::new(&env),
+
         );
 
         assert_eq!(id, 1);
@@ -2344,6 +2464,18 @@ mod tests {
 
             &approvers,
 
+            &false,
+
+            &false,
+
+            &0u32,
+
+            &0u32,
+
+            &0u32,
+
+            &Vec::<String>::new(&env),
+
         );
 
     }
@@ -2384,6 +2516,18 @@ mod tests {
             &treasury,
 
             &approvers,
+
+            &false,
+
+            &false,
+
+            &0u32,
+
+            &0u32,
+
+            &0u32,
+
+            &Vec::<String>::new(&env),
 
         );
 
@@ -2427,6 +2571,18 @@ mod tests {
             &treasury,
 
             &approvers,
+
+            &false,
+
+            &false,
+
+            &0u32,
+
+            &0u32,
+
+            &0u32,
+
+            &Vec::<String>::new(&env),
 
         );
 
@@ -2500,6 +2656,18 @@ mod tests {
             &treasury,
 
             &approvers,
+
+            &false,
+
+            &false,
+
+            &0u32,
+
+            &0u32,
+
+            &0u32,
+
+            &Vec::<String>::new(&env),
 
         );
 
