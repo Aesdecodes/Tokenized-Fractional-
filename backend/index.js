@@ -676,45 +676,119 @@ app.use('/api/admin/rate-limits', rateLimitAdminRoutes);
  *               $ref: '#/components/schemas/HealthResponse'
  */
 
-// Storage health check helper
-async function checkStorageHealth() {
-  const dataFile = process.env.DATA_FILE || "data.json";
-  const resolvedPath = require("path").resolve(process.cwd(), dataFile);
-  const dirPath = require("path").dirname(resolvedPath);
-
-  try {
-    await require("fs").promises.access(resolvedPath, require("fs").constants.R_OK | require("fs").constants.W_OK);
-    return { status: "ok" };
-  } catch (err) {
-    try {
-      await require("fs").promises.access(dirPath, require("fs").constants.W_OK);
-      return { status: "ok", note: "file will be created on write" };
-    } catch (dirErr) {
-      return { status: "degraded", error: err.message };
-    }
-  }
-}
-
-// Enhanced health check endpoint
-app.get("/health", async (req, res) => {
-  const storageHealth = await checkStorageHealth();
-  const isHealthy = storageHealth.status === "ok";
-
-  const healthResponse = {
-    status: isHealthy ? "ok" : "degraded",
-    timestamp: new Date().toISOString(),
-    dependencies: {
-      storage: storageHealth
-    }
+app.get('/health', async (_req, res) => {
+  const deploymentColor = process.env.DEPLOYMENT_COLOR || 'local';
+  const serviceName = process.env.SERVICE_NAME || 'backend';
+  const buildId = process.env.BUILD_ID || process.env.GITHUB_SHA || 'local';
+  const deps = {
+    storage: { status: 'ok' },
+    redis: { status: 'not_configured' },
   };
 
-  res.status(isHealthy ? 200 : 503).json(healthResponse);
-});
+  // Issue #801: report free space on the volume holding DATA_FILE.
+  //
+  // Informational only — this deliberately does NOT influence the HTTP status.
+  // Render restarts an instance whose health check fails, and restarting
+  // mid-fill-up is more likely to lose the pending write than to reclaim space.
+  // Alerting lives in scripts/check-disk-usage.js and the disk_usage_ratio
+  // gauge; the procedure is in docs/disk-usage-monitoring.md.
+  const diskUsage = await readDiskUsage(resolveDataDirectory(__dirname));
+  deps.disk = {
+    status: diskUsage.status,
+    usedPercent: diskUsage.usedPercent,
+    available: diskUsage.available,
+    thresholds: diskUsage.thresholds,
+    ...(diskUsage.message && { message: diskUsage.message }),
+  };
 
+  // Check storage (data file) accessibility
+  try {
+    const { promises: fsPromises, constants: fsConstants } = await import('fs');
+    const dataFile = process.env.DATA_FILE || 'data.json';
+    const resolvedPath = join(__dirname, dataFile);
+    try {
+      await fsPromises.access(resolvedPath, fsConstants.R_OK | fsConstants.W_OK); // eslint-disable-line no-bitwise
+      deps.storage = { status: 'ok' };
+    } catch {
+      // File may not exist yet — directory writability is sufficient
+      const dirPath = dirname(resolvedPath);
+      try {
+        await fsPromises.access(dirPath, fsConstants.W_OK);
+        deps.storage = { status: 'ok', note: 'file will be created on write' };
+      } catch (dirErr) {
+        deps.storage = { status: 'degraded', error: dirErr.message };
+      }
+    }
+  } catch (err) {
+    deps.storage = { status: 'degraded', error: err.message };
   }
 
-  res.json({
-    status: 'ok',
+  // Check Redis if configured
+  if (process.env.REDIS_URL) {
+    try {
+      const Redis = (await import('ioredis')).default;
+      // Reuse the same TLS options as the main cache client so the health
+      // check honours REDIS_TLS, REDIS_TLS_CA, REDIS_TLS_CERT, REDIS_TLS_KEY
+      // and REDIS_TLS_REJECT_UNAUTHORIZED.
+      const tlsOptions = buildTlsOptions();
+      const pingClient = new Redis(process.env.REDIS_URL, {
+        lazyConnect: true,
+        connectTimeout: 2000,
+        maxRetriesPerRequest: 0,
+        ...(tlsOptions && { tls: tlsOptions }),
+      });
+      await pingClient.connect();
+      await pingClient.ping();
+      pingClient.disconnect();
+      deps.redis = { status: 'ok' };
+    } catch {
+      deps.redis = { status: 'error', message: 'Redis configured but unreachable' };
+      return res.status(503).json({ status: 'degraded', timestamp: new Date().toISOString(), dependencies: deps });
+    }
+  }
+
+  // Check Soroban RPC if configured — the only on-chain integration, and
+  // the one dependency with no circuit-breaker outside this probe.  We call
+  // getHealth (a JSON-RPC method supported by every Soroban/Horizon node)
+  // with a hard 3 s timeout so a dead or slow node doesn't block the probe
+  // indefinitely.  The probe is skipped, not failed, when the env var is unset
+  // (test environments, off-chain-only deployments).
+  const sorobanRpcUrl = process.env.SOROBAN_RPC_URL || process.env.VITE_RPC_URL;
+  if (sorobanRpcUrl) {
+    deps.sorobanRpc = { status: 'not_configured' };
+    try {
+      const controller = new AbortController();
+      const rpcTimeout = setTimeout(() => controller.abort(), 3000);
+      try {
+        const rpcRes = await fetch(sorobanRpcUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getHealth' }),
+          signal: controller.signal,
+        });
+        clearTimeout(rpcTimeout);
+        if (!rpcRes.ok) {
+          throw new Error(`HTTP ${rpcRes.status}`);
+        }
+        const body = await rpcRes.json();
+        // Soroban RPC returns { result: { status: "healthy" } } on success
+        if (body?.result?.status !== 'healthy') {
+          throw new Error(`RPC status: ${body?.result?.status ?? 'unknown'}`);
+        }
+        deps.sorobanRpc = { status: 'ok' };
+      } finally {
+        clearTimeout(rpcTimeout);
+      }
+    } catch (err) {
+      const message = err.name === 'AbortError' ? 'timed out after 3 s' : err.message;
+      deps.sorobanRpc = { status: 'error', message };
+      return res.status(503).json({ status: 'degraded', timestamp: new Date().toISOString(), dependencies: deps });
+    }
+  }
+
+  const isHealthy = deps.storage.status === 'ok';
+  res.status(isHealthy ? 200 : 503).json({
+    status: isHealthy ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
     service: {
       name: serviceName,
@@ -2087,6 +2161,31 @@ if (process.env.NODE_ENV !== 'test') {
   // book / price updates reach clients on every horizontal node.
   wsManager.initialize(httpServer);
   wsManager.connectRedisAdapter();
+
+  // ── Graceful shutdown ──────────────────────────────────────────────────
+  // Stop accepting new connections, wait for in-flight requests to finish,
+  // then exit cleanly.  Without this, Docker/Kubernetes sends SIGTERM and
+  // the process exits immediately, dropping live requests.
+  const gracefulShutdown = (signal) => {
+    logger.info({ signal }, 'Shutdown signal received — stopping server');
+    httpServer.close((err) => {
+      if (err) {
+        logger.error({ err }, 'Error during graceful shutdown');
+        process.exit(1);
+      }
+      logger.info('HTTP server closed — exiting');
+      process.exit(0);
+    });
+
+    // Force exit if in-flight requests do not drain within 10 s
+    setTimeout(() => {
+      logger.warn('Graceful shutdown timed out — forcing exit');
+      process.exit(1);
+    }, 10_000).unref();
+  };
+
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 }
 if (require.main === module) {
   const PORT = process.env.PORT || 3001;
