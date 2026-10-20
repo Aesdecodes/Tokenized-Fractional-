@@ -49,6 +49,16 @@ pub enum Error {
 
     ReentrantCall = 19,
 
+    KYCRequired = 20,
+
+    AccreditationRequired = 21,
+
+    BelowMinInvestment = 22,
+
+    ExceedsMaxPerInvestor = 23,
+
+    RestrictedJurisdiction = 24,
+
 }
 
 
@@ -263,6 +273,12 @@ pub enum DataKey {
     Curators,
 
     ReentrantGuard,
+
+    KYCVerified(Address),
+
+    AccreditedInvestor(Address),
+
+    BuyerJurisdiction(Address),
 
 }
 
@@ -1069,6 +1085,90 @@ impl MultiAssetManager {
 
             panic_with_error!(&env, Error::InsufficientShares);
 
+
+        }
+
+        // AssetRestrictions enforcement (#935)
+
+        let restrictions: AssetRestrictions = env.storage().persistent()
+
+            .get(&DataKey::AssetRestrictions(asset_id))
+
+            .expect("Restrictions not found");
+
+        if restrictions.requires_kyc {
+
+            let kyc_verified: bool = env.storage().persistent()
+
+                .get(&DataKey::KYCVerified(buyer.clone()))
+
+                .unwrap_or(false);
+
+            if !kyc_verified {
+
+                panic_with_error!(&env, Error::KYCRequired);
+
+            }
+
+        }
+
+        if restrictions.requires_accreditation {
+
+            let accredited: bool = env.storage().persistent()
+
+                .get(&DataKey::AccreditedInvestor(buyer.clone()))
+
+                .unwrap_or(false);
+
+            if !accredited {
+
+                panic_with_error!(&env, Error::AccreditationRequired);
+
+            }
+
+        }
+
+        if restrictions.min_investment > 0 && amount < restrictions.min_investment {
+
+            panic_with_error!(&env, Error::BelowMinInvestment);
+
+        }
+
+        let current_investor_total: u32 = env.storage().persistent()
+
+            .get(&DataKey::AssetBalance(asset_id, buyer.clone()))
+
+            .unwrap_or(0);
+
+        if restrictions.max_per_investor > 0
+
+            && current_investor_total.saturating_add(amount) > restrictions.max_per_investor
+
+        {
+
+            panic_with_error!(&env, Error::ExceedsMaxPerInvestor);
+
+        }
+
+        if !restrictions.restricted_jurisdictions.is_empty() {
+
+            let buyer_jurisdiction: Option<String> = env.storage().persistent()
+
+                .get(&DataKey::BuyerJurisdiction(buyer.clone()));
+
+            match buyer_jurisdiction {
+
+                Some(j) if restrictions.restricted_jurisdictions.contains(&j) => {
+
+                    panic_with_error!(&env, Error::RestrictedJurisdiction);
+
+                }
+
+                Some(_) => {}
+
+                None => panic_with_error!(&env, Error::RestrictedJurisdiction),
+
+            }
 
         }
 
