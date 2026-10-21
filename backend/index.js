@@ -32,7 +32,7 @@ import { BillingService } from './src/services/billingService.js';
 import { createRateLimiter } from './src/middleware/rateLimiter.js';
 import { createGraphQLRateLimiter } from './src/middleware/tieredRateLimiter.js';
 import { createRateLimitAdminRoutes } from './src/routes/rateLimitAdmin.js';
-import { metricsMiddleware, metricsHandler } from './src/services/metricsService.js';
+import { metricsMiddleware, metricsHandler, metricsAuthMiddleware } from './src/services/metricsService.js';
 import { readDiskUsage, resolveDataDirectory } from './src/utils/diskUsage.js';
 import { applyCursorPagination, CursorError, paginationErrorHandler, SORT_FIELDS } from './src/services/cursorPagination.js';
 import { parsePaginationParams } from './src/middleware/cursorPagination.js';
@@ -44,6 +44,7 @@ import {
 import { generateOpenapiSpec } from './src/services/openapiService.js';
 import { getDatabase } from './src/services/database.js';
 import { logger, runWithRequestContext } from './logger.js';
+export { logger };
 import {
   initErrorTracking,
   installErrorTrackingRequestScope,
@@ -478,7 +479,7 @@ installErrorTrackingRequestScope(app);
 
 // Prometheus metrics for backend observability (Issue #518)
 app.use(metricsMiddleware);
-app.get('/metrics', metricsHandler);
+app.get('/metrics', metricsAuthMiddleware, metricsHandler);
 
 app.use(helmet());
 app.use(cors({ origin: CORS_ORIGINS, methods: ['GET', 'POST', 'PATCH', 'DELETE'], allowedHeaders: ['Content-Type', 'x-api-key', 'X-Request-ID'] }));
