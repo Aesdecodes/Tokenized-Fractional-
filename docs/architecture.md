@@ -228,6 +228,28 @@ Wind-down is deliberately **not** delegated to any role key: like `delist_asset`
 it is irreversible, so it stays behind the admin key (see
 [SECURITY.md](../SECURITY.md)).
 
+### Asset burn / reconstitution and holder compensation (Issue #943)
+
+`burn_and_reconstitute(asset_id, owner)` is the permanent end-of-life path for an
+asset: it requires the caller to hold the asset's *entire* outstanding supply and,
+once the last position is burned, archives the asset.
+
+Because this is the wind-down / buyout mechanism, the former holder may be owed
+compensation as a result of the burn — e.g. delivery of the underlying real-world
+asset itself, or an off-chain payout. The contract now keeps an on-chain record of
+that owed amount and publishes enough detail for the off-chain settlement process to
+act on reliably:
+
+- **On-chain compensation record** — `burn_and_reconstitute` computes the buyout
+  valuation (`burned_supply * price_per_share`), records it under
+  `DataKey::ReconstitutionCompensation(asset_id, owner)` before zeroing the
+  holder's balance, and exposes it through the `get_reconstitution_compensation`
+  view.
+- **Off-chain settlement event** — the burn publishes `EventReconstituted`
+  carrying `{ asset_id, owner, burned_supply, timestamp, valuation }`, i.e. the
+  asset valuation plus the burn timestamp that an off-chain settlement process
+  needs to reconcile payouts.
+
 ### Contract versioning policy (Issue #769)
 
 The contract version is SemVer and is reported in two forms by

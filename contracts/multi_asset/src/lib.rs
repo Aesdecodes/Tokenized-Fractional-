@@ -292,6 +292,11 @@ pub enum DataKey {
 
     IsHolder(u64, Address),
 
+    /// Issue #943: compensation owed to the former holder when an asset is
+    /// burned and reconstituted (buyout / wind-down). Recorded on-chain before
+    /// the holder's balance is zeroed so the owed amount is never lost.
+    ReconstitutionCompensation(u64, Address),
+
 }
 
 
@@ -405,6 +410,15 @@ pub struct EventReconstituted {
     pub owner: Address,
 
     pub burned_supply: u32,
+
+    /// Issue #943: ledger timestamp of the burn, for off-chain settlement
+    /// sequencing and audit trails.
+    pub timestamp: u64,
+
+    /// Issue #943: on-chain valuation of the burned supply
+    /// (`burned_supply * price_per_share`), i.e. the compensation value that an
+    /// off-chain settlement process may act on.
+    pub valuation: i128,
 
 }
 
@@ -1492,6 +1506,15 @@ impl MultiAssetManager {
 
     /// Burn all fractions when one owner has acquired the complete supply and
     /// permanently lock the asset for reconstitution.
+    ///
+    /// Issue #943: documents the wind-down semantics of this entry point. When
+    /// the sole holder of the entire outstanding supply burns their position
+    /// (a buyout / end-of-life wind-down), the holder may be owed compensation —
+    /// e.g. delivery of the underlying real-world asset itself or an off-chain
+    /// payout. The owed amount is now recorded on-chain before the holder's
+    /// balance is zeroed and is published through `EventReconstituted` together
+    /// with the asset valuation (`burned_supply * price_per_share`), giving the
+    /// off-chain settlement process a reliable, auditable basis to act on.
     pub fn burn_and_reconstitute(env: Env, asset_id: u64, owner: Address) {
 
         owner.require_auth();
@@ -1522,6 +1545,16 @@ impl MultiAssetManager {
 
         let burned_supply = info.total_supply;
 
+        // Issue #943: compute the buyout valuation (asset value owed as
+        // compensation) before the holder's position is zeroed.
+        let pricing: Option<AssetPricing> = env.storage().persistent().get(&DataKey::AssetPricing(asset_id));
+        let price_per_share: i128 = pricing.map(|p| p.fixed_price).unwrap_or(0);
+        let valuation: i128 = checked_mul_i128(&env, price_per_share, burned_supply as i128);
+
+        // Issue #943: record on-chain the compensation owed to the former holder
+        // so the wind-down / buyout settlement trail is auditable on-chain.
+        env.storage().persistent().set(&DataKey::ReconstitutionCompensation(asset_id, owner.clone()), &valuation);
+
         env.storage().persistent().set(&DataKey::AssetBalance(asset_id, owner.clone()), &0u32);
 
         info.total_supply = 0;
@@ -1530,8 +1563,15 @@ impl MultiAssetManager {
         info.updated_at = env.ledger().timestamp();
         env.storage().persistent().set(&DataKey::AssetInfo(asset_id), &info);
 
-        EventReconstituted { asset_id, owner, burned_supply }.publish(&env);
+        EventReconstituted { asset_id, owner, burned_supply, timestamp: env.ledger().timestamp(), valuation }.publish(&env);
 
+    }
+
+    /// Issue #943: return the compensation owed to a former holder that was
+    /// recorded when the asset was burned and reconstituted (buyout / wind-down).
+    /// Returns 0 when no burn compensation has been recorded for the holder.
+    pub fn get_reconstitution_compensation(env: Env, asset_id: u64, owner: Address) -> i128 {
+        env.storage().persistent().get(&DataKey::ReconstitutionCompensation(asset_id, owner)).unwrap_or(0)
     }
 
 
