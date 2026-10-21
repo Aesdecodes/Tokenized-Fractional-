@@ -1514,6 +1514,9 @@ impl RwaMarketplace {
 
         // Mint share-certificate NFTs per share purchased (if NFT contract is configured).
         // Use optimized batch minting for gas efficiency
+        // Note (Issue #942): the NFT batch-mint entry points enforce
+        // MAX_BATCH_MINT_SIZE, so a single large `shares` purchase cannot
+        // indirectly exceed the per-call mint ceiling.
         if let Some(nft_addr) = env
             .storage()
             .instance()
