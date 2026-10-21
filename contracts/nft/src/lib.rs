@@ -119,6 +119,10 @@ impl ShareCertificate {
     /// * `count` – number of NFTs to mint
     /// Returns the starting token ID.
     ///
+    /// Issue #941: rejects `count == 0` before any mint happens — previously
+    /// the first `Base::sequential_mint` ran unconditionally, so a zero count
+    /// still minted a single (unintended) certificate.
+    ///
     /// Issue #942: enforces the documented maximum batch size
     /// (`MAX_BATCH_MINT_SIZE`) with a clear error instead of risking a single
     /// call exceeding the transaction's Soroban resource/instruction budget.
@@ -129,6 +133,13 @@ impl ShareCertificate {
             .get(&DataKey::Minter)
             .expect("not initialized");
         minter.require_auth();
+
+        // Issue #941: a zero count must not mint anything. The first mint used
+        // to run unconditionally before the loop, so `count == 0` minted one
+        // certificate anyway.
+        if count == 0 {
+            panic!("count must be greater than zero");
+        }
 
         // Issue #942: enforce the documented maximum batch size so a single
         // call cannot exceed the Soroban resource/instruction budget.

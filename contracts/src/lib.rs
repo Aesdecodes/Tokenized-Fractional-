@@ -6889,6 +6889,26 @@ mod test {
         });
     }
 
+    // ── Issue #941: batch_mint_to_single zero-count regression tests ──
+
+    #[test]
+    #[should_panic(expected = "count must be greater than zero")]
+    fn test_batch_mint_to_single_zero_count_reverts() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let minter = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        ShareCertificate::init(
+            &env,
+            minter.clone(),
+            soroban_sdk::String::from_str(&env, "ipfs://test"),
+            soroban_sdk::String::from_str(&env, "Test NFT"),
+            soroban_sdk::String::from_str(&env, "TEST"),
+        );
+        // `count == 0` must not mint anything (Issue #941).
+        ShareCertificate::batch_mint_to_single(&env, recipient, 0);
+    }
+
     // â”€â”€ Secure Transfer Function Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     #[test]
