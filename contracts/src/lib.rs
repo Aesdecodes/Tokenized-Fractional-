@@ -1514,6 +1514,9 @@ impl RwaMarketplace {
 
         // Mint share-certificate NFTs per share purchased (if NFT contract is configured).
         // Use optimized batch minting for gas efficiency
+        // Note (Issue #942): the NFT batch-mint entry points enforce
+        // MAX_BATCH_MINT_SIZE, so a single large `shares` purchase cannot
+        // indirectly exceed the per-call mint ceiling.
         if let Some(nft_addr) = env
             .storage()
             .instance()
@@ -6884,6 +6887,26 @@ mod test {
         te.env.as_contract(&nft_id, || {
             assert_eq!(Base::owner_of(&te.env, 0), te.buyer);
         });
+    }
+
+    // ── Issue #941: batch_mint_to_single zero-count regression tests ──
+
+    #[test]
+    #[should_panic(expected = "count must be greater than zero")]
+    fn test_batch_mint_to_single_zero_count_reverts() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let minter = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        ShareCertificate::init(
+            &env,
+            minter.clone(),
+            soroban_sdk::String::from_str(&env, "ipfs://test"),
+            soroban_sdk::String::from_str(&env, "Test NFT"),
+            soroban_sdk::String::from_str(&env, "TEST"),
+        );
+        // `count == 0` must not mint anything (Issue #941).
+        ShareCertificate::batch_mint_to_single(&env, recipient, 0);
     }
 
     // â”€â”€ Secure Transfer Function Tests â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
