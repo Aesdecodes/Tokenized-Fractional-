@@ -45,6 +45,9 @@ import { BillingService } from './src/services/billingService.js';
 import { createRateLimiter } from './src/middleware/rateLimiter.js';
 import { createGraphQLRateLimiter } from './src/middleware/tieredRateLimiter.js';
 import { createRateLimitAdminRoutes } from './src/routes/rateLimitAdmin.js';
+import { TenantService } from './src/services/tenantService.js';
+import { createTenantAdminRoutes } from './src/routes/tenantAdmin.js';
+import { startVaultMetricsRefreshCron } from './src/services/vaultMetricsRefresh.js';
 import { metricsMiddleware, metricsHandler } from './src/services/metricsService.js';
 import { readDiskUsage, resolveDataDirectory } from './src/utils/diskUsage.js';
 import { applyCursorPagination, CursorError, paginationErrorHandler, SORT_FIELDS } from './src/services/cursorPagination.js';
@@ -666,6 +669,15 @@ const rateLimitAdminRoutes = createRateLimitAdminRoutes(rateLimiterService, admi
   billingService,
 });
 app.use('/api/admin/rate-limits', rateLimitAdminRoutes);
+
+// Tenant admin routes (Issue #900): onboarding + post-onboarding quota management.
+// The service (and DB handle) is resolved lazily per request via getDatabase().
+app.use(
+  '/api/admin/tenants',
+  createTenantAdminRoutes(() => new TenantService(getDatabase(), logger), adminAuth, {
+    writeLimiter,
+  })
+);
 
 /**
  * @openapi
@@ -2154,18 +2166,13 @@ if (process.env.NODE_ENV !== 'test') {
       billing: billingService.enabled,
     }, 'RWA Off-chain Metadata Backend started');
 
-    // Cron job to refresh materialized view (PostgreSQL only)
-    setInterval(async () => {
-      try {
-        const db = getDatabase();
-        if (db && db.client.config.client === 'pg') {
-          await db.raw('REFRESH MATERIALIZED VIEW CONCURRENTLY mv_historical_vault_metrics');
-          logger.info('Materialized view mv_historical_vault_metrics refreshed in background');
-        }
-      } catch (error) {
-        reportError(error, { message: 'Failed to refresh materialized view' });
-      }
-    }, 60 * 60 * 1000); // 1 hour
+    // Cron job to refresh the vault metrics materialized view (PostgreSQL
+    // only). Strategy + staleness bound documented in
+    // docs/VAULT_METRICS_REFRESH.md; cadence tunable via MV_REFRESH_INTERVAL_MS.
+    startVaultMetricsRefreshCron(getDatabase, {
+      info: (obj, msg) => logger.info(obj, msg),
+      error: ({ message, error }) => reportError(new Error(error), { message }),
+    });
   });
 
   // ── WebSocket server (Issue #593) ──────────────────────────────────────
