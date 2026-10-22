@@ -89,6 +89,55 @@ function LazyFallback() {
       }}
     >
 
+      {/* Asset Search, Filter, and Sort Toolbar (#786) */}
+      <div className="asset-search-toolbar" style={{ margin: "20px auto", padding: "16px 20px", background: "#f8fafc", borderRadius: "8px", border: "1px solid #e2e8f0", maxWidth: "900px", display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "center", justifyContent: "space-between" }}>
+        <input 
+          type="text"
+          placeholder="🔍 Search assets by name or location..."
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+          style={{ flex: "1 1 280px", padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: "6px", fontSize: "14px" }}
+        />
+        <select 
+          value={assetTypeFilter}
+          onChange={(e) => setAssetTypeFilter(e.target.value)}
+          style={{ padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: "6px", fontSize: "14px", background: "#fff" }}
+        >
+          <option value="all">All Asset Types</option>
+          <option value="real_estate">Real Estate</option>
+          <option value="energy">Energy & Infrastructure</option>
+        </select>
+        <select 
+          value={sortBy}
+          onChange={(e) => setSortBy(e.target.value)}
+          style={{ padding: "8px 12px", border: "1px solid #cbd5e1", borderRadius: "6px", fontSize: "14px", background: "#fff" }}
+        >
+          <option value="newest">Sort: Newest First</option>
+          <option value="valuation-desc">Valuation: High to Low</option>
+          <option value="valuation-asc">Valuation: Low to High</option>
+        </select>
+      </div>
+
+      {/* Asset Listing Results */}
+      <div className="asset-grid" style={{ margin: "10px auto", maxWidth: "900px", display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "16px", textAlign: "left" }}>
+        {filteredAssets.length === 0 ? (
+          <div style={{ gridColumn: "1 / -1", padding: "30px", background: "#fff", borderRadius: "8px", textAlign: "center", color: "#64748b" }}>
+            No assets match your search criteria.
+          </div>
+        ) : (
+          filteredAssets.map(asset => (
+            <div key={asset.contractId} style={{ background: "#fff", border: "1px solid #e2e8f0", borderRadius: "8px", padding: "16px", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
+              <span style={{ fontSize: "11px", fontWeight: "700", color: "#0284c7", background: "#e0f2fe", padding: "2px 8px", borderRadius: "12px", textTransform: "uppercase" }}>{asset.assetType}</span>
+              <h4 style={{ margin: "10px 0 6px 0", color: "#0f172a", fontSize: "16px" }}>{asset.title}</h4>
+              <p style={{ margin: "0 0 6px 0", fontSize: "13px", color: "#475569" }}>📍 {asset.location}</p>
+              <p style={{ margin: "0 0 10px 0", fontSize: "14px", fontWeight: "600", color: "#16a34a" }}>Valuation: $${asset.valuation.toLocaleString()}</p>
+              <code style={{ fontSize: "10px", color: "#94a3b8", display: "block", wordBreak: "break-all" }}>{asset.contractId}</code>
+            </div>
+          ))
+        )}
+      </div>
+
+
       {/* My NFT Certificates Gallery Section (#788) */}
       <div className="nft-certificates-gallery" style={{ margin: "30px auto", padding: "24px", background: "#ffffff", borderRadius: "10px", border: "1px solid #e2e8f0", maxWidth: "900px", textAlign: "left" }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "16px" }}>
@@ -414,6 +463,61 @@ const MarketplacePage = React.memo(
 );
 
 function App() {
+  // Search, Filter, and Sort State & URL Sync (#786)
+  const [searchQuery, setSearchQuery] = React.useState("");
+  const [assetTypeFilter, setAssetTypeFilter] = React.useState("all");
+  const [sortBy, setSortBy] = React.useState("newest");
+  const [filteredAssets, setFilteredAssets] = React.useState([]);
+
+  // Mock asset catalog for searching and filtering
+  const catalogAssets = [
+    { contractId: "CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE", title: "Luxury Manhattan Condo Unit 12B", location: "New York, NY", assetType: "real_estate", valuation: 2500000, status: "approved", createdAt: "2026-06-01" },
+    { contractId: "CC1234567890ABCDEFGHJKLMNOPQRSTUVWXYZ23456789ABCDEFGH", title: "Silicon Valley Tech Park Parcel A", location: "San Jose, CA", assetType: "real_estate", valuation: 8500000, status: "approved", createdAt: "2026-07-15" },
+    { contractId: "CC9876543210FEDCBAZYXWVUTSRQPONMLKJIHGFEDCBA9876543210", title: "Solar Farm Infrastructure Alpha", location: "Austin, TX", assetType: "energy", valuation: 1200000, status: "approved", createdAt: "2026-08-10" }
+  ];
+
+  // Initialize state from URL query parameters on mount
+  React.useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const q = params.get("search") || "";
+    const type = params.get("type") || "all";
+    const sort = params.get("sort") || "newest";
+
+    setSearchQuery(q);
+    setAssetTypeFilter(type);
+    setSortBy(sort);
+  }, []);
+
+  // Update URL query parameters whenever filters change
+  React.useEffect(() => {
+    const params = new URLSearchParams();
+    if (searchQuery) params.set("search", searchQuery);
+    if (assetTypeFilter !== "all") params.set("type", assetTypeFilter);
+    if (sortBy !== "newest") params.set("sort", sortBy);
+
+    const newUrl = `${window.location.pathname}${params.toString() ? "?" + params.toString() : ""}`;
+    window.history.replaceState({}, "", newUrl);
+
+    // Apply filtering and sorting
+    let result = [...catalogAssets];
+    if (searchQuery) {
+      const query = searchQuery.toLowerCase();
+      result = result.filter(a => a.title.toLowerCase().includes(query) || a.location.toLowerCase().includes(query));
+    }
+    if (assetTypeFilter !== "all") {
+      result = result.filter(a => a.assetType === assetTypeFilter);
+    }
+    if (sortBy === "valuation-asc") {
+      result.sort((a, b) => a.valuation - b.valuation);
+    } else if (sortBy === "valuation-desc") {
+      result.sort((a, b) => b.valuation - a.valuation);
+    } else if (sortBy === "newest") {
+      result.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    }
+
+    setFilteredAssets(result);
+  }, [searchQuery, assetTypeFilter, sortBy]);
+
   // NFT Certificates Gallery State (#788)
   const [certificates, setCertificates] = React.useState([]);
   const [loadingCerts, setLoadingCerts] = React.useState(false);
