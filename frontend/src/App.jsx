@@ -89,6 +89,27 @@ function LazyFallback() {
       }}
     >
 
+      {/* RPC Network & Connectivity Resilience Alert (#790) */}
+      {rpcError && (
+        <div className="rpc-error-banner" style={{ margin: "16px auto", padding: "14px 18px", background: "#fef2f2", border: "1px solid #fca5a5", borderRadius: "8px", maxWidth: "600px", textAlign: "left" }}>
+          <h4 style={{ margin: "0 0 6px 0", color: "#991b1b", fontSize: "15px", display: "flex", alignItems: "center", gap: "8px" }}>
+            ⚠️ {rpcError.startsWith("NETWORK_OUTAGE") ? "RPC Connectivity Issue" : "Smart Contract Exception"}
+          </h4>
+          <p style={{ margin: 0, color: "#7f1d1d", fontSize: "13px" }}>
+            {rpcError.replace("NETWORK_OUTAGE: ", "").replace("CONTRACT_ERROR: ", "")}
+          </p>
+          <button onClick={simulateRpcCall} style={{ marginTop: "10px", padding: "6px 12px", background: "#dc2626", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer", fontSize: "12px", fontWeight: "600" }}>
+            🔄 Retry Network Call
+          </button>
+        </div>
+      )}
+      {isRpcRetrying && (
+        <div className="rpc-retrying-indicator" style={{ margin: "10px auto", color: "#d97706", fontSize: "13px", fontWeight: "600" }}>
+          ⏳ Retrying connection to Soroban RPC endpoint (exponential backoff)...
+        </div>
+      )}
+
+
       {/* Official Contract Address & Verification Widget (#787) */}
       <div className="contract-verification-card" style={{ margin: "20px auto", padding: "16px 20px", background: "#f8fafc", borderRadius: "8px", border: "1px solid #cbd5e1", maxWidth: "600px", textAlign: "left" }}>
         <h4 style={{ margin: "0 0 8px 0", color: "#1e293b", fontSize: "15px" }}>🛡️ Official Contract Verification</h4>
@@ -338,6 +359,57 @@ const MarketplacePage = React.memo(
 );
 
 function App() {
+  // RPC Resilience, Timeout & Retry Logic (#790)
+  const [rpcError, setRpcError] = React.useState("");
+  const [isRpcRetrying, setIsRpcRetrying] = React.useState(false);
+
+  /**
+   * Resilient RPC fetcher with explicit timeouts and exponential backoff.
+   */
+  const callRpcWithRetry = async (rpcFn, maxRetries = 3, timeoutMs = 5000) => {
+    setRpcError("");
+    setIsRpcRetrying(false);
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("RPC Request Timeout")), timeoutMs)
+        );
+
+        // Race RPC call against explicit timeout
+        const result = await Promise.race([rpcFn(), timeoutPromise]);
+        return result;
+      } catch (err) {
+        console.warn(`RPC Call failed (Attempt ${attempt}/${maxRetries}):`, err.message);
+        
+        if (attempt === maxRetries) {
+          if (err.message.includes("Timeout") || err.message.includes("NetworkError") || err.message.includes("Failed to fetch")) {
+            setRpcError("NETWORK_OUTAGE: The Soroban RPC endpoint is unresponsive or timing out. Please try again later.");
+          } else {
+            setRpcError(`CONTRACT_ERROR: ${err.message}`);
+          }
+          throw err;
+        }
+
+        setIsRpcRetrying(true);
+        // Exponential backoff delay (500ms, 1000ms, 2000ms...)
+        const backoffDelay = Math.pow(2, attempt - 1) * 500;
+        await new Promise((resolve) => setTimeout(resolve, backoffDelay));
+      }
+    }
+  };
+
+  const simulateRpcCall = async () => {
+    try {
+      await callRpcWithRetry(async () => {
+        // Simulated RPC operation
+        return true;
+      });
+    } catch (err) {
+      // Error handled in state
+    }
+  };
+
   // Contract Verification State (#787)
   const [copiedContractId, setCopiedContractId] = React.useState("");
   const activeContractId = "CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE";
