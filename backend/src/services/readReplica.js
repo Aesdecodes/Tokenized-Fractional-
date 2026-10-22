@@ -6,6 +6,16 @@
  *
  * Distributes read queries to replicas while routing writes to the primary.
  * Includes health monitoring, automatic failover, and lag tracking.
+ *
+ * Tenant-context note (Issue #898): RLS-enabled tables require
+ * `app.current_tenant_id` to be set per query, not per connection. The plain
+ * readQuery()/writeQuery() helpers below intentionally carry NO tenant context
+ * (queries against RLS tables fail closed and return no rows). Use the
+ * readQueryForTenant()/writeQueryForTenant() helpers — or withTenantContext()
+ * directly — for tenant-scoped access; they set the context with `SET LOCAL`
+ * inside a transaction, which reverts automatically when the transaction
+ * ends, so a pooled/replica connection can never leak one tenant's context to
+ * the next query that reuses it.
  */
 
 import knex from 'knex';
@@ -30,6 +40,7 @@ export async function initReadReplicas(config) {
   // Initialize primary connection
   primaryDb = knex(primary);
   await primaryDb.raw('SELECT 1');
+  await clearTenantContext(primaryDb);
   console.log('[ReadReplica] Primary connection established');
 
   // Initialize replica connections
@@ -37,6 +48,7 @@ export async function initReadReplicas(config) {
     try {
       const replica = knex(replicaConfig);
       await replica.raw('SELECT 1');
+      await clearTenantContext(replica);
       replicas.push({
         db: replica,
         healthy: true,
@@ -87,8 +99,96 @@ export function getReplica() {
 }
 
 /**
- * Execute a read query on a replica with automatic failover,
- * ensuring tenant context is applied identically across replica and primary.
+ * Whether a knex instance targets PostgreSQL (the only backend with RLS).
+ * @param {import('knex').Knex} db
+ * @returns {boolean}
+ */
+function isPostgres(db) {
+  return Boolean(db && db.client && db.client.config && db.client.config.client === 'pg');
+}
+
+/**
+ * Issue #898: Defensive reset of the RLS tenant context on a pooled
+ * connection at acquisition time. `SET LOCAL` already scopes the context to a
+ * transaction, but this guarantees a freshly-acquired connection (which may
+ * have been recycled from a previous session, e.g. through a pooler running
+ * in statement/session mode) starts with no tenant context at all.
+ * @param {import('knex').Knex} db
+ */
+async function clearTenantContext(db) {
+  if (isPostgres(db)) {
+    await db.raw(`SET app.current_tenant_id = ''`);
+  }
+}
+
+/**
+ * Issue #898: Execute `work` with the RLS tenant context applied safely.
+ *
+ * The context is set with `SET LOCAL` INSIDE a transaction, so it is
+ * guaranteed to be reset when the transaction ends — even though the
+ * underlying connection returns to a shared pool and may immediately serve a
+ * different tenant's query. Never set `app.current_tenant_id` with a plain
+ * (session-level) `SET` on a pooled connection.
+ *
+ * @param {import('knex').Knex} db - Knex instance (primary, replica, or pool-wrapped)
+ * @param {string} tenantId - Tenant to scope the work to
+ * @param {(trx: import('knex').Knex.Transaction) => Promise<any>} work - Query work receiving a tenant-scoped connection
+ * @returns {Promise<any>}
+ */
+export async function withTenantContext(db, tenantId, work) {
+  if (!isPostgres(db)) {
+    // SQLite and other dev backends have no RLS; scope is the caller's job.
+    return work(db);
+  }
+
+  const trx = await db.transaction();
+  try {
+    await trx.raw('SET LOCAL app.current_tenant_id = ?', [tenantId]);
+    const result = await work(trx);
+    await trx.commit();
+    return result;
+  } catch (error) {
+    await trx.rollback();
+    throw error;
+  }
+}
+
+/**
+ * Issue #898: Tenant-scoped read on a replica with automatic failover.
+ * Runs the query inside a transaction with `SET LOCAL app.current_tenant_id`,
+ * so RLS policies apply on the exact connection that serves the query and the
+ * context cannot outlive it.
+ * @param {string} tenantId
+ * @param {(trx: import('knex').Knex.Transaction) => Promise<any>} queryFn
+ * @returns {Promise<any>} Query result
+ */
+export async function readQueryForTenant(tenantId, queryFn) {
+  const healthyReplicas = replicas.filter(r => r.healthy);
+
+  for (const replica of healthyReplicas) {
+    try {
+      return await withTenantContext(replica.db, tenantId, (trx) => queryFn(trx));
+    } catch (error) {
+      console.warn('[ReadReplica] Tenant-scoped replica query failed, trying next:', error.message);
+      replica.healthy = false;
+    }
+  }
+
+  return withTenantContext(primaryDb, tenantId, (trx) => queryFn(trx));
+}
+
+/**
+ * Issue #898: Tenant-scoped write on the primary.
+ * @param {string} tenantId
+ * @param {(trx: import('knex').Knex.Transaction) => Promise<any>} queryFn
+ * @returns {Promise<any>}
+ */
+export async function writeQueryForTenant(tenantId, queryFn) {
+  return withTenantContext(primaryDb, tenantId, (trx) => queryFn(trx));
+}
+
+/**
+ * Execute a read query on a replica with automatic failover
  * @param {Function} queryFn - Function that takes a knex connection and returns a query
  * @param {string} [tenantId] - Optional tenant identifier to enforce RLS
  * @returns {Promise<any>} Query result

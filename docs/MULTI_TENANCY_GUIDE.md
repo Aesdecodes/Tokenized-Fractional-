@@ -17,36 +17,31 @@ The `TenantService` handles automated onboarding, config management, and analyti
 - **Performance Isolation:** Tenants on the `standard` plan are limited to 100 API requests per minute. `enterprise` tenants receive higher quotas.
 - **Tenant Analytics:** Aggregated usage reports are generated securely using the tenant's execution context.
 
-### Quotas & Custom Enterprise Deals (Issue #900)
-Default quotas are defined in `TenantService.PLAN_QUOTAS` (`standard`: 100 req/min, `enterprise`: 1000 req/min). For negotiated B2B deals a **custom per-tenant quota** can be provisioned at onboarding and adjusted later — no direct database edits are ever required.
+## Pool-Safety Audit (Issue #898)
+RLS policies are only as strong as the session context that feeds them. Because knex connections are **pooled and reused across tenants**, the tenant context must be scoped per *query*, never per *connection*. Audit results:
 
-**At onboarding** — pass `max_api_requests_per_min` to override the plan default:
+| Component | Finding |
+|---|---|
+| `backend/src/middleware/tenantContext.js` | ✅ Correct: sets the context with `SET LOCAL` inside a per-request transaction. `SET LOCAL` reverts at `COMMIT`/`ROLLBACK`, so a pooled connection returned to the pool carries no tenant context. |
+| `backend/src/services/database.js` | ⚠️ Carries no tenant context of its own; safety depends on all tenant-scoped queries running through the middleware transaction (or `withTenantContext`). Plain queries on RLS tables **fail closed** (zero rows). |
+| `backend/src/services/readReplica.js` | ⚠️ Fixed in #898: plain `readQuery()`/`writeQuery()` carry no tenant context (fail-closed on RLS tables). New `readQueryForTenant()`/`writeQueryForTenant()`/`withTenantContext()` helpers set the context with `SET LOCAL` per transaction, and connections are defensively reset (`SET app.current_tenant_id = ''`) at acquisition time. |
 
-```js
-await tenantService.onboardTenant({
-  name: 'Acme Corp',
-  billing_plan: 'enterprise',
-  max_api_requests_per_min: 5000, // negotiated custom quota (overrides the 1000 default)
-});
+**Rules of thumb**
+- Always use `SET LOCAL` inside a transaction — never a session-level `SET` — for `app.current_tenant_id`.
+- Never cache a tenant-scoped connection; scope every query/transaction independently.
+- `current_setting('app.current_tenant_id', true)` returning an empty string matches no rows, so missing context fails closed rather than leaking.
+
+### Security regression test
+`backend/__tests__/rlsTenantIsolation.security.test.js` (Issue #898) proves isolation against a real PostgreSQL: it applies the **actual** RLS migration, forces RLS on the table owner, then issues interleaved queries for two tenants through a deliberately small shared pool (max 2 connections) and asserts each tenant only ever sees its own rows — including after connection reuse. It also covers the fail-closed no-context case, the middleware path, and the `system_admin` bypass.
+
+Run it with Docker available (it boots an ephemeral `postgres:16-alpine` container), or point it at an existing database:
+```bash
+cd backend
+npm test -- rlsTenantIsolation
+# or against a specific server:
+TEST_POSTGRES_URL=postgresql://user:pass@host:5432/db npm test -- rlsTenantIsolation
 ```
-
-**Post-onboarding adjustment process** (for support/sales teams):
-1. The deal owner confirms the new quota and the reason (e.g. "enterprise uplift, ticket SUP-123").
-2. An admin calls the admin endpoint with the admin API key (`x-api-key` header):
-
-   ```http
-   PUT /api/admin/tenants/{tenantId}/quota
-   x-api-key: <ADMIN_API_KEY>
-   Content-Type: application/json
-
-   { "maxApiRequestsPerMin": 5000, "reason": "Enterprise uplift, ticket SUP-123" }
-   ```
-
-   or calls `tenantService.updateTenantQuota(tenantId, { maxApiRequestsPerMin }, { updatedBy, reason })` directly.
-3. The change is applied immediately and audit-logged with the previous quota, new quota, actor, and reason.
-4. Quotas must be positive integers; invalid values are rejected with a `400` before touching the database. Unknown tenants return `404`.
-
-The full admin API surface also includes `POST /api/admin/tenants` (onboard, accepts the same custom quota field) and `GET /api/admin/tenants/{tenantId}` (inspect current quota). See `backend/__tests__/tenantQuota.test.js` for executable examples.
+Without Docker or a `TEST_POSTGRES_URL`/`DATABASE_URL`, the live assertions are skipped with a warning (same convention as `postgresTriggers.test.js`).
 
 ## Usage
 When making API requests on behalf of a tenant, ensure the authentication token contains the `tenantId` claim, or pass the header:
