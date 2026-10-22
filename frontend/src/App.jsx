@@ -111,6 +111,16 @@ function LazyFallback() {
             Verify against Official Registry ↗
           </a>
         </div>
+      {/* Wallet Connection Bar */}
+      <div className="wallet-bar" style={{ padding: "12px 20px", background: "#f3f4f6", borderBottom: "1px solid #e5e7eb", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontSize: "14px", fontWeight: "600", color: "#374151" }}>
+          {isReconnecting ? "🔄 Reconnecting Wallet..." : walletAddress ? `Connected: ${walletAddress.substring(0, 6)}...${walletAddress.substring(walletAddress.length - 4)}` : "Wallet Not Connected"}
+        </span>
+        {walletAddress ? (
+          <button onClick={handleDisconnectWallet} style={{ padding: "6px 12px", background: "#ef4444", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer" }}>Disconnect</button>
+        ) : (
+          <button onClick={handleConnectWallet} style={{ padding: "6px 12px", background: "#2563eb", color: "#fff", border: "none", borderRadius: "4px", cursor: "pointer" }}>Connect Freighter Wallet</button>
+        )}
       </div>
 
       <Skeleton
@@ -336,6 +346,60 @@ function App() {
     navigator.clipboard.writeText(id);
     setCopiedContractId(id);
     setTimeout(() => setCopiedContractId(""), 2500);
+  // Auto-reconnect Wallet Effect (#785)
+  const [walletAddress, setWalletAddress] = React.useState("");
+  const [isReconnecting, setIsReconnecting] = React.useState(false);
+
+  React.useEffect(() => {
+    const autoReconnect = async () => {
+      const previouslyConnected = localStorage.getItem("wallet_previously_connected");
+      if (previouslyConnected === "true") {
+        setIsReconnecting(true);
+        try {
+          if (window.freighterApi && typeof window.freighterApi.isConnected === "function") {
+            const isConnected = await window.freighterApi.isConnected();
+            if (isConnected) {
+              const publicKey = await window.freighterApi.getPublicKey();
+              if (publicKey) {
+                setWalletAddress(publicKey);
+                localStorage.setItem("wallet_previously_connected", "true");
+              }
+            }
+          }
+        } catch (err) {
+          console.warn("Silent wallet reconnection failed, falling back to manual connect:", err);
+          localStorage.removeItem("wallet_previously_connected");
+        } finally {
+          setIsReconnecting(false);
+        }
+      }
+    };
+
+    autoReconnect();
+  }, []);
+
+  const handleConnectWallet = async () => {
+    try {
+      if (window.freighterApi) {
+        const publicKey = await window.freighterApi.getPublicKey();
+        if (publicKey) {
+          setWalletAddress(publicKey);
+          localStorage.setItem("wallet_previously_connected", "true");
+        }
+      } else {
+        // Fallback demo connection
+        const mockAddress = "GBRPYHIL2CI3FNQ4BXLFMNDLFIM33A";
+        setWalletAddress(mockAddress);
+        localStorage.setItem("wallet_previously_connected", "true");
+      }
+    } catch (err) {
+      console.error("Manual wallet connection error:", err);
+    }
+  };
+
+  const handleDisconnectWallet = () => {
+    setWalletAddress("");
+    localStorage.removeItem("wallet_previously_connected");
   };
 
   // ── Global store state ─────────────────────────────────────────────────────
