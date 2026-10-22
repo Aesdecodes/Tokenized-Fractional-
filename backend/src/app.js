@@ -97,7 +97,13 @@ import {
   problemDetailsErrorHandler,
 } from './middleware/problemDetails.js';
 import { stitchingMetrics, getSchemaVersion, stitchingConfig } from '../graphql-stitching.js';
-import { metricsMiddleware, metricsHandler } from './services/metricsService.js';
+import {
+  metricsMiddleware,
+  metricsHandler,
+  metricsAuthMiddleware,
+  setMetricsApiKeyService,
+  setMetricsTransactionService,
+} from './services/metricsService.js';
 
 validateEnv();
 
@@ -173,6 +179,7 @@ export async function initializeApp() {
 
     // Create API key service
     apiKeyService = createApiKeyService(db, logger);
+    setMetricsApiKeyService(apiKeyService);
 
     // Create and bind adminAuth middleware
     adminAuth = createAdminAuth(apiKeyService);
@@ -183,6 +190,7 @@ export async function initializeApp() {
 
     // Create transaction service
     transactionService = createTransactionService(db, logger);
+    setMetricsTransactionService(transactionService);
     logger.info('Transaction service initialized');
 
     // Setup analytics and purchases routes
@@ -302,7 +310,7 @@ app.use('/graphql', createEndpointRateLimiter());
 
 // Prometheus metrics for backend observability (Issue #518)
 app.use(metricsMiddleware);
-app.get('/metrics', metricsHandler);
+app.get('/metrics', metricsAuthMiddleware, metricsHandler);
 
 // Swagger docs — generated from JSDoc @openapi annotations + static spec (Issue #295)
 const fullSwaggerSpec = swaggerJSDoc({

@@ -131,6 +131,7 @@ graph TB
 - [Stellar and Soroban Glossary](docs/stellar-glossary.md) — Plain-language definitions and official documentation links for common ecosystem terms
 - [Security Best Practices Guide](docs/security.md) — Security guidelines, audit checklist, and incident response
 - [Observability Guide](docs/OBSERVABILITY.md) — Structured logging, request IDs, secret redaction, Sentry alerting, and the ELK log pipeline
+- [Prometheus Metrics & Grafana Guide](docs/METRICS_AND_MONITORING.md) — Scraping `/metrics`, business & operational KPIs, production authentication, and SLO alerting
 - [Performance Benchmarks](docs/performance.md) — Gas costs, API latency, frontend metrics
 - [CDN Configuration](docs/cdn.md) — Serve frontend assets and uploaded media through Cloudflare
 - [Troubleshooting Guide](docs/troubleshooting.md) — Common issues and solutions

@@ -11,6 +11,7 @@
  */
 
 import { randomUUID } from 'crypto';
+import { recordPurchaseMetric } from './metricsService.js';
 
 /**
  * Transaction Service
@@ -128,8 +129,16 @@ export class TransactionService {
         sharesPurchased: data.sharesPurchased,
       }, 'Purchase recorded');
 
+      recordPurchaseMetric({
+        status: 'completed',
+        contractId: data.contractId,
+        sharesPurchased: data.sharesPurchased,
+        totalAmount: data.totalAmount,
+      });
+
       return transaction;
     } catch (error) {
+      recordPurchaseMetric({ status: 'failed' });
       this.logger.error({ error: error.message, data }, 'Failed to record purchase');
       throw new Error(`Failed to record purchase: ${error.message}`);
     }
