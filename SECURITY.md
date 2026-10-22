@@ -14,6 +14,65 @@ This policy covers security vulnerabilities in:
 - **Backend API** (`backend/`) — Express.js off-chain metadata service.
 - **Frontend** (`frontend/`) — React + Vite dApp interacting with Freighter wallet and Soroban RPC.
 
+## Smart Contract Audit Status
+
+**Status: UNAUDITED** (as of 2026-09-28).
+
+The Soroban contract in `contracts/` has **not** been reviewed by an
+independent third party. There is no audit report to link to. The contract
+custodies payment-token balances and holds an admin key that can pause trading,
+change the price, raise the share supply and withdraw tokens, so an unreviewed
+defect in that logic is a direct financial risk.
+
+| Component | Audit status |
+| --- | --- |
+| Smart contract (`contracts/`) | **Unaudited** — no independent review has been performed |
+| Backend API (`backend/`) | Not separately audited |
+| Frontend (`frontend/`) | Not separately audited |
+
+### Mainnet risk disclaimer
+
+> **Do not deploy this contract to Stellar mainnet to custody real user funds
+> while it is unaudited.** An unaudited contract may contain a fund-loss or
+> access-control defect. Anyone evaluating a mainnet deployment — issuers,
+> operators, or forks of this repository — should treat that as a known,
+> accepted risk only after their own independent review, and should start with
+> a capped-value or testnet pilot rather than full production value.
+
+This disclaimer is removed only when an audit report is published **and** its
+findings have been remediated (see below).
+
+### Audit plan
+
+- [ ] Freeze the contract's public interface for the audit window.
+- [ ] Engage an independent auditor with Soroban/Rust experience.
+- [ ] Give the auditor the fund-handling and admin surface: `buy_shares`,
+      `transfer_admin` / `accept_admin`, `pause` / `unpause`,
+      `emergency_withdraw`, `update_price`, `increase_total_shares` and the
+      price oracle fallback.
+- [ ] Remediate every high/critical finding and re-verify the fixes.
+- [ ] Publish the report and update this section.
+
+When the status changes, replace **UNAUDITED** with **AUDITED**, link the report
+next to the table above, and keep the disclaimer until the findings are closed.
+
+### Re-audit policy
+
+An audit is a snapshot of one revision, not a permanent guarantee. A **re-audit
+(or written sign-off from the original auditor) is required** before merging any
+of the following into `contracts/`:
+
+1. A change to how payment tokens move — `buy_shares`, fees, or the transfer/
+   mint path.
+2. A change to the admin surface or the two-step admin transfer.
+3. A change to the storage layout, keys, or `init`/migration behaviour.
+4. A change to oracle handling or the `update_price` fallback.
+5. A new external dependency in the contract's trust boundary.
+6. A fix for a previously reported security finding.
+
+The re-audit is tracked as an issue against the pull request that makes the
+change, and this section is updated in the same pull request that closes it.
+
 ## Reporting a Vulnerability
 
 **Please do not open a public GitHub issue for security vulnerabilities.**
@@ -43,7 +102,9 @@ Report vulnerabilities privately via one of these channels:
 
 The Soroban smart contract manages financial transactions on the Stellar network. High-severity issues include:
 
-- Unauthorised access to `admin`-only functions (`pause`, `unpause`, `emergency_withdraw`, `update_price`, `increase_total_shares`).
+- Unauthorised access to privileged functions: `pause` / `unpause` (Pauser role),
+  `emergency_withdraw` (Treasury role), `set_nft_contract` (MetadataManager role),
+  `wind_down` / `burn_shares` (`admin`), `update_price`, `increase_total_shares`.
 - Re-entrancy or integer overflow in `buy_shares`.
 - Bypassing the pause mechanism.
 - Token drain or fund misappropriation.
@@ -67,6 +128,47 @@ The contract uses a **two-step admin transfer** to prevent accidental or malicio
 - After `accept_admin`, the old admin key should be considered revoked and should no longer be used for any contract operations.
 - Monitor `EventAdminTransferInitiated` events for unexpected admin transfer proposals.
 - If a transfer is initiated by mistake, the pending admin can simply never call `accept_admin()`, and the transfer expires (pending admin can be overwritten by a new `transfer_admin` call from the current admin).
+
+## Role Model (Issue #768)
+
+Beyond the admin key the contract supports three duty-separated roles. Each role is an
+independent address stored under its own storage key, and each is gated by
+`require_auth` for the stored address only — a call authorised by any other address
+is rejected.
+
+| Role | Entry points guarded | Assigned with | Read with |
+| --- | --- | --- | --- |
+| **Pauser** | `pause`, `unpause` | `set_pauser(address)` | `get_pauser()` |
+| **Treasury** | `emergency_withdraw` | `set_treasury(address)` | `get_treasury()` |
+| **MetadataManager** | `set_nft_contract` | `set_metadata_manager(address)` | `get_metadata_manager()` |
+
+**Defaults.** `init` seeds all three roles to the admin address, so a deployment that
+never calls a `set_*` setter behaves exactly as it did before role separation. The
+division of duty only becomes effective once the admin assigns distinct addresses.
+
+**Assignment is admin-only.** Each setter requires `admin` authorisation and emits
+`EventRoleAssigned { role, holder }`; monitor that event for unexpected re-assignment.
+Rotation is single-step (assignment replaces the holder immediately), so route the
+address through the same operational review as an admin transfer.
+
+**Scope notes:**
+
+- `wind_down()` and `burn_shares()` (Issue #766) remain `admin`-only. They are
+  destructive/irreversible and are deliberately not delegated to a role key.
+- `delist_asset`, `update_price`, `increase_total_shares`, and the two-step admin
+  transfer remain `admin`-only.
+- The Pauser address cannot drain funds: `emergency_withdraw` requires Treasury
+  authorisation, and the Treasury address cannot pause or unpause. Tests in
+  `contracts/src/lib.rs` (`role_separation_tests`) assert both directions.
+
+### End-of-life wind-down (Issue #766)
+
+`wind_down()` is an irreversible end-of-life switch. It sets `IsClosed` alongside the
+pause flag. `unpause()` can clear the pause, but `IsClosed` is never cleared: every
+purchase entry point (`buy_shares`, `buy_vested_shares`, `batch_buy_shares`,
+`buy_from_order`) rejects with `Marketplace is closed` afterwards. Transfers,
+redemptions and `claim_distribution` keep working so holders can exit, and the admin
+can `burn_shares` any remaining inventory.
 
 ## Runbook: Correcting a Deployment Mistake
 

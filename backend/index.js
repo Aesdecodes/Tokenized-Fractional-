@@ -1,12 +1,26 @@
+
+// Content-Type: application/json enforcement middleware (#782)
+const requireJsonContentType = (req, res, next) => {
+  const contentType = req.headers["content-type"];
+  if (!contentType || !contentType.toLowerCase().includes("application/json")) {
+    return res.status(415).json({
+      error: "Unsupported Media Type",
+      message: "Requests to write endpoints must specify Content-Type: application/json"
+    });
+  }
+  next();
+};
+
 // Copyright (c) 2026 Tokenized Fractional RWA Marketplace Contributors
 // SPDX-License-Identifier: MIT
 
 import 'dotenv/config';
 import { validateEnv } from './env.js';
 validateEnv();
-import { randomUUID } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import express from 'express';
 import { Router } from 'express';
+import multer from 'multer';
 import cors from 'cors';
 import helmet from 'helmet';
 import pinoHttp from 'pino-http';
@@ -18,7 +32,11 @@ import swaggerUi from 'swagger-ui-express';
 import { swaggerSpec } from './docs.js';
 import yoga from './graphql/index.js';
 import { createETagMiddleware, invalidateLedger } from './graphql/etag.js';
-import { cacheGet, cacheSet, cacheDel } from './cache.js';
+import { cacheGet, cacheSet, cacheDel, buildTlsOptions } from './cache.js';
+import { withCdnAssetUrls } from './cdn.js';
+import { uploadToIPFS, getIPFSFileUrl, unpinFromIPFS } from './ipfs.js';
+import { createBatchHandler } from './src/middleware/batchHandler.js';
+import { createValidationMiddleware } from './src/middleware/validate.js';
 import { RateLimiterService } from './src/services/rateLimiterService.js';
 import { AnomalyDetector } from './src/services/anomalyDetector.js';
 import { GeoLimiter } from './src/services/geoLimiter.js';
@@ -27,7 +45,11 @@ import { BillingService } from './src/services/billingService.js';
 import { createRateLimiter } from './src/middleware/rateLimiter.js';
 import { createGraphQLRateLimiter } from './src/middleware/tieredRateLimiter.js';
 import { createRateLimitAdminRoutes } from './src/routes/rateLimitAdmin.js';
+import { TenantService } from './src/services/tenantService.js';
+import { createTenantAdminRoutes } from './src/routes/tenantAdmin.js';
+import { startVaultMetricsRefreshCron } from './src/services/vaultMetricsRefresh.js';
 import { metricsMiddleware, metricsHandler } from './src/services/metricsService.js';
+import { readDiskUsage, resolveDataDirectory } from './src/utils/diskUsage.js';
 import { applyCursorPagination, CursorError, paginationErrorHandler, SORT_FIELDS } from './src/services/cursorPagination.js';
 import { parsePaginationParams } from './src/middleware/cursorPagination.js';
 import {
@@ -46,6 +68,7 @@ import {
   reportError,
 } from './src/services/errorTracking.js';
 import { wsManager } from './websocket.js';
+import { parseWebhookUrl, postWebhook } from './src/utils/safeWebhookRequest.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 // multer memoryStorage keeps the file in memory as a Buffer (req.file.buffer).
@@ -68,6 +91,12 @@ const PORT = process.env.PORT || 3001;
 const CORS_ORIGINS = process.env.CORS_ORIGINS
   ? process.env.CORS_ORIGINS.split(',').map(s => s.trim())
   : ['http://localhost:5173', 'http://localhost:4173'];
+
+// ── v1 Router ─────────────────────────────────────────────────────────────────
+// All versioned API routes (/rwa, /news, /webhooks, ...) are registered on this
+// router and mounted under both `/api/v1` (preferred) and `/api` (legacy alias),
+// so a breaking change can ship as `/api/v2` without disturbing existing clients.
+const v1 = Router();
 
 // ── Structured logging + error tracking (issue #703) ──────────────────────────
 // One pino instance for the whole process (see logger.js): newline-delimited
@@ -113,6 +142,67 @@ export function validateRwaBody(body) {
 
 function cacheKey(contractId) {
   return `rwa:${contractId}`;
+}
+
+// ── Conditional GET / caching helpers (issue #709) ────────────────────────────
+// Asset metadata is read-heavy and only changes on an admin write, so the
+// read-only list/detail endpoints hand out an `ETag` + `Cache-Control` and
+// answer `If-None-Match` / `If-Modified-Since` with `304 Not Modified`.
+function makeETag(source, weak = false) {
+  const hash = createHash('sha1').update(source).digest('base64url');
+  return `${weak ? 'W/' : ''}"${hash}"`;
+}
+
+/**
+ * Send a JSON payload with validators and cache directives, short-circuiting to
+ * `304` when the client's representation is still fresh.
+ */
+function sendCachedJson(req, res, payload, options = {}) {
+  const { maxAge = 60, staleWhileRevalidate = 60, etagSource, weak = false, lastModified } = options;
+  const body = JSON.stringify(payload);
+  const etag = makeETag(etagSource !== undefined ? etagSource : body, weak);
+
+  res.setHeader('ETag', etag);
+  res.setHeader('Cache-Control', `public, max-age=${maxAge}, stale-while-revalidate=${staleWhileRevalidate}`);
+  res.setHeader('Vary', 'Accept-Encoding');
+
+  let lastModifiedDate = null;
+  if (lastModified) {
+    const parsed = new Date(lastModified);
+    if (!isNaN(parsed.getTime())) {
+      lastModifiedDate = parsed;
+      res.setHeader('Last-Modified', parsed.toUTCString());
+    }
+  }
+
+  // RFC 9110: when If-None-Match is present, If-Modified-Since is ignored.
+  const ifNoneMatch = req.headers['if-none-match'];
+  if (ifNoneMatch) {
+    const tags = String(ifNoneMatch).split(',').map(t => t.trim());
+    if (tags.includes('*') || tags.includes(etag)) return res.status(304).end();
+  } else if (lastModifiedDate && req.headers['if-modified-since']) {
+    const since = new Date(req.headers['if-modified-since']);
+    if (!isNaN(since.getTime()) && lastModifiedDate <= since) return res.status(304).end();
+  }
+
+  return res.type('application/json').send(body);
+}
+
+/**
+ * The list response embeds signed pagination cursors whose signature carries a
+ * timestamp, so the raw body changes on every request. The resource itself has
+ * not changed, though — hash only the page contents and stable pagination
+ * metadata and emit a *weak* ETag, which is exactly the "semantically
+ * equivalent" contract that lets us still answer `304`.
+ */
+function sendCachedAssetList(req, res, result) {
+  const { nextCursor, prevCursor, ...pagination } = result.pagination || {};
+  return sendCachedJson(req, res, result, {
+    maxAge: 30,
+    staleWhileRevalidate: 60,
+    etagSource: JSON.stringify({ data: result.data, pagination }),
+    weak: true,
+  });
 }
 
 // ── Full-Text Search Index (Issue #181) ────────────────────────────────────────
@@ -303,9 +393,9 @@ function saveWebhooks(data) {
 function validateWebhookBody(body) {
   if (!body.url || typeof body.url !== 'string') return 'url is required';
   try {
-    new URL(body.url);
-  } catch {
-    return 'url must be a valid URL';
+    parseWebhookUrl(body.url);
+  } catch (err) {
+    return err.message;
   }
   if (!Array.isArray(body.events) || body.events.length === 0) {
     return 'events must be a non-empty array';
@@ -329,11 +419,9 @@ async function deliverToWebhook(webhook, payload) {
     'X-Webhook-Delivery': randomUUID(),
   };
 
-  const response = await fetch(webhook.url, {
-    method: 'POST',
+  const response = await postWebhook(webhook.url, {
     headers,
     body,
-    signal: AbortSignal.timeout(5000),
   });
 
   if (!response.ok) {
@@ -421,6 +509,21 @@ app.use((req, res, next) => {
   req.requestId = id;
   res.setHeader('X-Request-ID', id);
   runWithRequestContext({ requestId: id }, next);
+});
+
+// ── API versioning (issue #704) ───────────────────────────────────────────────
+// `/api/v1/*` is the supported surface going forward. `/api/*` remains as a
+// backward-compatible alias while clients migrate and advertises its own
+// deprecation (RFC 8594 `Deprecation` / `Link: rel="successor-version"`) so the
+// frontend and any tooling can detect it. See docs/api-versioning.md for the
+// full policy, compatibility guarantees and the v2 procedure.
+app.use('/api', (req, res, next) => {
+  res.setHeader('X-API-Version', '1');
+  if (!req.path.startsWith('/v1')) {
+    res.setHeader('Deprecation', 'true');
+    res.setHeader('Link', '</api/v1>; rel="successor-version"');
+  }
+  next();
 });
 
 // Issue #519: RFC 7807 problem-details interceptor — normalizes legacy error
@@ -567,13 +670,22 @@ const rateLimitAdminRoutes = createRateLimitAdminRoutes(rateLimiterService, admi
 });
 app.use('/api/admin/rate-limits', rateLimitAdminRoutes);
 
+// Tenant admin routes (Issue #900): onboarding + post-onboarding quota management.
+// The service (and DB handle) is resolved lazily per request via getDatabase().
+app.use(
+  '/api/admin/tenants',
+  createTenantAdminRoutes(() => new TenantService(getDatabase(), logger), adminAuth, {
+    writeLimiter,
+  })
+);
+
 /**
  * @openapi
  * /health:
  *   get:
  *     tags: [Health]
  *     summary: System health check
- *     description: Returns overall system status, timestamp, and dependency health (storage, Redis). Returns 503 degraded status if Redis is configured but unreachable.
+ *     description: Returns overall system status, timestamp, and dependency health (storage, Redis, disk). The disk entry reports free space on the volume holding DATA_FILE as an informational signal only — it never changes the HTTP status. Returns 503 degraded status if Redis is configured but unreachable. See docs/disk-usage-monitoring.md.
  *     responses:
  *       200:
  *         description: System is healthy
@@ -588,6 +700,7 @@ app.use('/api/admin/rate-limits', rateLimitAdminRoutes);
  *             schema:
  *               $ref: '#/components/schemas/HealthResponse'
  */
+
 app.get('/health', async (_req, res) => {
   const deploymentColor = process.env.DEPLOYMENT_COLOR || 'local';
   const serviceName = process.env.SERVICE_NAME || 'backend';
@@ -596,6 +709,44 @@ app.get('/health', async (_req, res) => {
     storage: { status: 'ok' },
     redis: { status: 'not_configured' },
   };
+
+  // Issue #801: report free space on the volume holding DATA_FILE.
+  //
+  // Informational only — this deliberately does NOT influence the HTTP status.
+  // Render restarts an instance whose health check fails, and restarting
+  // mid-fill-up is more likely to lose the pending write than to reclaim space.
+  // Alerting lives in scripts/check-disk-usage.js and the disk_usage_ratio
+  // gauge; the procedure is in docs/disk-usage-monitoring.md.
+  const diskUsage = await readDiskUsage(resolveDataDirectory(__dirname));
+  deps.disk = {
+    status: diskUsage.status,
+    usedPercent: diskUsage.usedPercent,
+    available: diskUsage.available,
+    thresholds: diskUsage.thresholds,
+    ...(diskUsage.message && { message: diskUsage.message }),
+  };
+
+  // Check storage (data file) accessibility
+  try {
+    const { promises: fsPromises, constants: fsConstants } = await import('fs');
+    const dataFile = process.env.DATA_FILE || 'data.json';
+    const resolvedPath = join(__dirname, dataFile);
+    try {
+      await fsPromises.access(resolvedPath, fsConstants.R_OK | fsConstants.W_OK); // eslint-disable-line no-bitwise
+      deps.storage = { status: 'ok' };
+    } catch {
+      // File may not exist yet — directory writability is sufficient
+      const dirPath = dirname(resolvedPath);
+      try {
+        await fsPromises.access(dirPath, fsConstants.W_OK);
+        deps.storage = { status: 'ok', note: 'file will be created on write' };
+      } catch (dirErr) {
+        deps.storage = { status: 'degraded', error: dirErr.message };
+      }
+    }
+  } catch (err) {
+    deps.storage = { status: 'degraded', error: err.message };
+  }
 
   // Check Redis if configured
   if (process.env.REDIS_URL) {
@@ -621,8 +772,48 @@ app.get('/health', async (_req, res) => {
     }
   }
 
-  res.json({
-    status: 'ok',
+  // Check Soroban RPC if configured — the only on-chain integration, and
+  // the one dependency with no circuit-breaker outside this probe.  We call
+  // getHealth (a JSON-RPC method supported by every Soroban/Horizon node)
+  // with a hard 3 s timeout so a dead or slow node doesn't block the probe
+  // indefinitely.  The probe is skipped, not failed, when the env var is unset
+  // (test environments, off-chain-only deployments).
+  const sorobanRpcUrl = process.env.SOROBAN_RPC_URL || process.env.VITE_RPC_URL;
+  if (sorobanRpcUrl) {
+    deps.sorobanRpc = { status: 'not_configured' };
+    try {
+      const controller = new AbortController();
+      const rpcTimeout = setTimeout(() => controller.abort(), 3000);
+      try {
+        const rpcRes = await fetch(sorobanRpcUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'getHealth' }),
+          signal: controller.signal,
+        });
+        clearTimeout(rpcTimeout);
+        if (!rpcRes.ok) {
+          throw new Error(`HTTP ${rpcRes.status}`);
+        }
+        const body = await rpcRes.json();
+        // Soroban RPC returns { result: { status: "healthy" } } on success
+        if (body?.result?.status !== 'healthy') {
+          throw new Error(`RPC status: ${body?.result?.status ?? 'unknown'}`);
+        }
+        deps.sorobanRpc = { status: 'ok' };
+      } finally {
+        clearTimeout(rpcTimeout);
+      }
+    } catch (err) {
+      const message = err.name === 'AbortError' ? 'timed out after 3 s' : err.message;
+      deps.sorobanRpc = { status: 'error', message };
+      return res.status(503).json({ status: 'degraded', timestamp: new Date().toISOString(), dependencies: deps });
+    }
+  }
+
+  const isHealthy = deps.storage.status === 'ok';
+  res.status(isHealthy ? 200 : 503).json({
+    status: isHealthy ? 'ok' : 'degraded',
     timestamp: new Date().toISOString(),
     service: {
       name: serviceName,
@@ -778,7 +969,7 @@ v1.get('/rwa', (req, res) => {
     const paginationParams = parsePaginationParams(req);
     const result = applyCursorPagination(assets, paginationParams);
 
-    res.json(result);
+    sendCachedAssetList(req, res, result);
 
     // Cache the asset list result (fire-and-forget)
     cacheSet('rwa:all', result).catch(() => {});
@@ -836,7 +1027,7 @@ app.get('/api/rwa', (req, res, next) => {
     const paginationParams = parsePaginationParams(req);
     const result = applyCursorPagination(assets, paginationParams);
 
-    res.json(result);
+    sendCachedAssetList(req, res, result);
 
     // Cache the asset list result (fire-and-forget)
     cacheSet('rwa:all', result).catch(() => {});
@@ -844,6 +1035,133 @@ app.get('/api/rwa', (req, res, next) => {
     next(error);
   }
 });
+
+// ── GET /rwa/pending — assets awaiting review (admin) ────────────────────────
+/**
+ * @openapi
+ * /api/v1/rwa/pending:
+ *   get:
+ *     tags: [Assets]
+ *     summary: List assets pending review
+ *     description: Returns every asset whose status is "pending". Admin only.
+ *     security:
+ *       - ApiKeyAuth: []
+ *     responses:
+ *       200:
+ *         description: List of pending assets
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: array
+ *               items:
+ *                 $ref: '#/components/schemas/Asset'
+ *       401:
+ *         description: Invalid or missing API key
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
+function listPendingAssets(_req, res) {
+  const data = loadData();
+  const pending = Object.entries(data)
+    .filter(([, meta]) => meta.status === ASSET_STATUS.PENDING)
+    .map(([contractId, meta]) => withCdnAssetUrls({ contractId, ...meta }));
+  res.json(pending);
+}
+
+// ── GET /rwa/search — full-text search with relevance ranking ────────────────
+/**
+ * @openapi
+ * /api/v1/rwa/search:
+ *   get:
+ *     tags: [Assets]
+ *     summary: Full-text search across approved assets
+ *     description: Ranks approved assets by TF-IDF relevance across title, location and description, with optional faceted filters.
+ *     parameters:
+ *       - in: query
+ *         name: q
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Search query
+ *       - in: query
+ *         name: assetType
+ *         schema:
+ *           type: string
+ *         description: Restrict results to a single asset type
+ *       - in: query
+ *         name: location
+ *         schema:
+ *           type: string
+ *         description: Restrict results to locations containing this substring
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *     responses:
+ *       200:
+ *         description: Ranked search results
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/PaginatedAssets'
+ *       400:
+ *         description: Missing or blank `q` parameter
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ */
+function searchAssets(req, res) {
+  const { q, assetType, location, page, limit } = req.query;
+  if (!q || !String(q).trim()) {
+    return res.status(400).json({ error: 'Missing required query parameter: q' });
+  }
+
+  const data = loadData();
+  const approvedData = Object.fromEntries(
+    Object.entries(data).filter(([, meta]) => isApproved(meta))
+  );
+
+  buildSearchIndex(approvedData);
+  let ranked = scoreSearch(q, approvedData);
+
+  if (assetType) {
+    const lower = assetType.toLowerCase();
+    ranked = ranked.filter(r => approvedData[r.contractId]?.assetType?.toLowerCase() === lower);
+  }
+  if (location) {
+    const lower = location.toLowerCase();
+    ranked = ranked.filter(r => approvedData[r.contractId]?.location?.toLowerCase().includes(lower));
+  }
+
+  const total = ranked.length;
+  const pageNum = Math.max(1, parseInt(page) || 1);
+  const pageSize = Math.min(100, Math.max(1, parseInt(limit) || 20));
+  const totalPages = Math.ceil(total / pageSize) || 1;
+  const slice = ranked.slice((pageNum - 1) * pageSize, pageNum * pageSize);
+
+  const results = slice.map(({ contractId, score }) => ({
+    contractId,
+    ...withCdnAssetUrls(approvedData[contractId]),
+    _score: score,
+  }));
+
+  res.json({ data: results, pagination: { total, page: pageNum, limit: pageSize, totalPages } });
+}
+
+// Registered on both the versioned router and the legacy alias (issue #704).
+app.get('/api/rwa/pending', adminAuth, listPendingAssets);
+app.get('/api/rwa/search', searchAssets);
+v1.get('/rwa/pending', adminAuth, listPendingAssets);
+v1.get('/rwa/search', searchAssets);
 
 /**
  * @openapi
@@ -883,11 +1201,17 @@ app.get('/api/rwa', (req, res, next) => {
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-app.get('/api/rwa/:contractId', async (req, res) => {
+async function getAssetMetadata(req, res) {
   const { contractId } = req.params;
 
   const cached = await cacheGet(cacheKey(contractId));
-  if (cached) return res.json(withCdnAssetUrls(cached));
+  if (cached) {
+    return sendCachedJson(req, res, withCdnAssetUrls(cached), {
+      maxAge: 60,
+      staleWhileRevalidate: 120,
+      lastModified: cached.updatedAt || cached.createdAt,
+    });
+  }
 
   const data = loadData();
   const asset = data[contractId];
@@ -897,16 +1221,24 @@ app.get('/api/rwa/:contractId', async (req, res) => {
   const result = { contractId, ...asset };
   // Cache individual asset (fire-and-forget)
   cacheSet(cacheKey(contractId), result).catch(() => {});
-  res.json(withCdnAssetUrls(result));
-});
+  sendCachedJson(req, res, withCdnAssetUrls(result), {
+    maxAge: 60,
+    staleWhileRevalidate: 120,
+    lastModified: result.updatedAt || result.createdAt,
+  });
+}
+
+// Registered on both the versioned router and the legacy alias (issue #704).
+app.get('/api/rwa/:contractId', getAssetMetadata);
+v1.get('/rwa/:contractId', getAssetMetadata);
 
 /**
  * @openapi
  * /api/rwa:
  *   post:
  *     tags: [Assets]
- *     summary: Create or update RWA asset metadata
- *     description: Creates a new asset metadata record or updates an existing one. Requires admin authentication. The contractId must be at least 50 characters starting with "C". Required fields: title, location, description, assetType. Invalidates Redis cache on success.
+ *     summary: Create RWA asset metadata
+ *     description: Creates a new asset metadata record. This endpoint is create-only — a POST for an existing contractId returns 409 Conflict; use PATCH /api/v1/rwa/{contractId} to update. Requires admin authentication. The contractId must be at least 50 characters starting with "C". Required fields: title, location, description, assetType. Invalidates Redis cache on success.
  *     security:
  *       - ApiKeyAuth: []
  *     requestBody:
@@ -919,14 +1251,14 @@ app.get('/api/rwa/:contractId', async (req, res) => {
  *             contractId: 'CCF7LXM6U6H6Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z7Z'
  *             title: 'Luxury Manhattan Condo Unit 12B'
  *             location: 'New York, NY'
- *             description: 'A fully furnished 2-bedroom condo'
+ *             description: "Tokenized Fractional RWA REST API. See the [API Changelog](https://github.com/Code-Paragon/Tokenized-Fractional-/blob/main/docs/api-changelog.md) for version history and updates."
  *             assetType: 'real_estate'
  *             imageUrl: 'https://ipfs.io/ipfs/QmX...'
  *             totalValuation: '2500000.00'
  *             documents: ['https://ipfs.io/ipfs/QmY...']
  *     responses:
  *       201:
- *         description: Asset created/updated successfully
+ *         description: Asset created successfully
  *         content:
  *           application/json:
  *             schema:
@@ -943,6 +1275,14 @@ app.get('/api/rwa/:contractId', async (req, res) => {
  *           application/json:
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
+ *       409:
+ *         description: An asset with this contractId already exists
+ *         content:
+ *           application/json:
+ *             schema:
+ *               $ref: '#/components/schemas/ErrorResponse'
+ *             example:
+ *               error: 'Asset with contract ID C... already exists. Use PATCH /api/v1/rwa/C... to update it.'
  *       429:
  *         description: Rate limit exceeded (write limiter)
  *         content:
@@ -950,7 +1290,7 @@ app.get('/api/rwa/:contractId', async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-app.post('/api/rwa', adminAuth, writeLimiter, async (req, res) => {
+async function createAssetMetadata(req, res) {
   const { contractId, ...metadata } = req.body;
 
   if (!contractId || !validateContractId(contractId)) {
@@ -961,6 +1301,17 @@ app.post('/api/rwa', adminAuth, writeLimiter, async (req, res) => {
   if (validationError) return res.status(400).json({ error: validationError });
 
   const data = loadData();
+
+  // Issue #706: POST is create-only. Silently overwriting an existing asset by
+  // re-submitting a POST with a reused or typo'd contract ID is data loss with
+  // no warning, so reject the collision and point the caller at PATCH instead.
+  if (data[contractId]) {
+    return res.status(409).json({
+      error: `Asset with contract ID ${contractId} already exists. Use PATCH /api/v1/rwa/${contractId} to update it.`,
+      code: 'ASSET_ALREADY_EXISTS',
+    });
+  }
+
   const now = new Date().toISOString();
   data[contractId] = {
     id: metadata.id || contractId,
@@ -985,7 +1336,11 @@ app.post('/api/rwa', adminAuth, writeLimiter, async (req, res) => {
 
   req.log?.info({ contractId }, 'Asset created/updated');
   res.status(201).json(withCdnAssetUrls({ contractId, ...data[contractId] }));
-});
+}
+
+// Registered on both the versioned router and the legacy alias (issue #704).
+app.post('/api/rwa', adminAuth, writeLimiter, createAssetMetadata);
+v1.post('/rwa', adminAuth, writeLimiter, createAssetMetadata);
 
 /**
  * @openapi
@@ -1030,7 +1385,7 @@ app.post('/api/rwa', adminAuth, writeLimiter, async (req, res) => {
  *             schema:
  *               $ref: '#/components/schemas/ErrorResponse'
  */
-app.delete('/api/rwa/:contractId', adminAuth, writeLimiter, async (req, res) => {
+async function deleteAssetMetadata(req, res) {
   const { contractId } = req.params;
   const data = loadData();
   if (!data[contractId]) return res.status(404).json({ error: 'Asset metadata not found' });
@@ -1063,7 +1418,11 @@ app.delete('/api/rwa/:contractId', adminAuth, writeLimiter, async (req, res) => 
 
   req.log?.info({ contractId }, 'Asset deleted');
   res.json({ message: 'Asset metadata deleted', contractId });
-});
+}
+
+// Registered on both the versioned router and the legacy alias (issue #704).
+app.delete('/api/rwa/:contractId', adminAuth, writeLimiter, deleteAssetMetadata);
+v1.delete('/rwa/:contractId', adminAuth, writeLimiter, deleteAssetMetadata);
 
 // Cursor pagination error handler
 app.use(paginationErrorHandler);
@@ -1807,18 +2166,13 @@ if (process.env.NODE_ENV !== 'test') {
       billing: billingService.enabled,
     }, 'RWA Off-chain Metadata Backend started');
 
-    // Cron job to refresh materialized view (PostgreSQL only)
-    setInterval(async () => {
-      try {
-        const db = getDatabase();
-        if (db && db.client.config.client === 'pg') {
-          await db.raw('REFRESH MATERIALIZED VIEW CONCURRENTLY mv_historical_vault_metrics');
-          logger.info('Materialized view mv_historical_vault_metrics refreshed in background');
-        }
-      } catch (error) {
-        reportError(error, { message: 'Failed to refresh materialized view' });
-      }
-    }, 60 * 60 * 1000); // 1 hour
+    // Cron job to refresh the vault metrics materialized view (PostgreSQL
+    // only). Strategy + staleness bound documented in
+    // docs/VAULT_METRICS_REFRESH.md; cadence tunable via MV_REFRESH_INTERVAL_MS.
+    startVaultMetricsRefreshCron(getDatabase, {
+      info: (obj, msg) => logger.info(obj, msg),
+      error: ({ message, error }) => reportError(new Error(error), { message }),
+    });
   });
 
   // ── WebSocket server (Issue #593) ──────────────────────────────────────
@@ -1827,4 +2181,38 @@ if (process.env.NODE_ENV !== 'test') {
   // book / price updates reach clients on every horizontal node.
   wsManager.initialize(httpServer);
   wsManager.connectRedisAdapter();
+
+  // ── Graceful shutdown ──────────────────────────────────────────────────
+  // Stop accepting new connections, wait for in-flight requests to finish,
+  // then exit cleanly.  Without this, Docker/Kubernetes sends SIGTERM and
+  // the process exits immediately, dropping live requests.
+  const gracefulShutdown = (signal) => {
+    logger.info({ signal }, 'Shutdown signal received — stopping server');
+    httpServer.close((err) => {
+      if (err) {
+        logger.error({ err }, 'Error during graceful shutdown');
+        process.exit(1);
+      }
+      logger.info('HTTP server closed — exiting');
+      process.exit(0);
+    });
+
+    // Force exit if in-flight requests do not drain within 10 s
+    setTimeout(() => {
+      logger.warn('Graceful shutdown timed out — forcing exit');
+      process.exit(1);
+    }, 10_000).unref();
+  };
+
+  process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+  process.on('SIGINT',  () => gracefulShutdown('SIGINT'));
 }
+if (require.main === module) {
+  const PORT = process.env.PORT || 3001;
+  app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+  });
+}
+
+// Export the app for testing and OpenAPI verification
+module.exports = app;

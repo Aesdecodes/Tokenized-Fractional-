@@ -19,6 +19,9 @@
  */
 
 import knex from 'knex';
+import { setTenantContext, withTenantContext } from './database.js';
+
+export { setTenantContext, withTenantContext };
 
 let primaryDb = null;
 let replicas = [];
@@ -187,14 +190,18 @@ export async function writeQueryForTenant(tenantId, queryFn) {
 /**
  * Execute a read query on a replica with automatic failover
  * @param {Function} queryFn - Function that takes a knex connection and returns a query
+ * @param {string} [tenantId] - Optional tenant identifier to enforce RLS
  * @returns {Promise<any>} Query result
  */
-export async function readQuery(queryFn) {
+export async function readQuery(queryFn, tenantId = null) {
   const healthyReplicas = replicas.filter(r => r.healthy);
 
   // Try replicas first
   for (const replica of healthyReplicas) {
     try {
+      if (tenantId) {
+        return await withTenantContext(replica.db, tenantId, queryFn);
+      }
       const result = await queryFn(replica.db);
       return result;
     } catch (error) {
@@ -205,16 +212,47 @@ export async function readQuery(queryFn) {
 
   // Fallback to primary
   console.warn('[ReadReplica] All replicas failed, falling back to primary');
+  if (tenantId) {
+    return await withTenantContext(primaryDb, tenantId, queryFn);
+  }
   return queryFn(primaryDb);
 }
 
 /**
- * Execute a write query on the primary
+ * Execute a write query on the primary, ensuring tenant context is preserved if provided.
  * @param {Function} queryFn - Function that takes a knex connection and returns a query
+ * @param {string} [tenantId] - Optional tenant identifier
  * @returns {Promise<any>} Query result
  */
-export async function writeQuery(queryFn) {
+export async function writeQuery(queryFn, tenantId = null) {
+  if (tenantId) {
+    return withTenantContext(primaryDb, tenantId, queryFn);
+  }
   return queryFn(primaryDb);
+}
+
+/**
+ * Acquire a tenant-scoped connection/transaction from a replica (or primary on fallback).
+ * @param {string} tenantId
+ * @returns {Promise<import('knex').Knex.Transaction>}
+ */
+export async function getTenantReplica(tenantId) {
+  const replicaDb = getReplica();
+  const trx = await replicaDb.transaction();
+  await setTenantContext(trx, tenantId);
+  return trx;
+}
+
+/**
+ * Acquire a tenant-scoped connection/transaction from the primary database.
+ * @param {string} tenantId
+ * @returns {Promise<import('knex').Knex.Transaction>}
+ */
+export async function getTenantPrimary(tenantId) {
+  const primary = getPrimary();
+  const trx = await primary.transaction();
+  await setTenantContext(trx, tenantId);
+  return trx;
 }
 
 /**

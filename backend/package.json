@@ -28,14 +28,17 @@
     "restore": "node restore.js",
     "docs:generate": "node scripts/generate-docs.js",
     "docs:serve": "node scripts/generate-docs.js && echo \"Docs generated in docs/api/\"",
-    "docs:verify-examples": "node scripts/verify-readme-examples.js"
+    "docs:verify-examples": "node scripts/verify-readme-examples.js",
+    "test:openapi": "node scripts/verify-openapi.js",
+    "check:unmounted-routes": "node scripts/check-unmounted-routes.js"
   },
   "jest": {
     "testEnvironment": "node",
     "globalSetup": "./__tests__/setup.js",
     "testPathIgnorePatterns": [
       "/node_modules/",
-      "__tests__/setup.js"
+      "__tests__/setup.js",
+      "__tests__/fixtures/"
     ],
     "transform": {},
     "collectCoverage": false,
@@ -67,6 +70,7 @@
     "@apollo/server": "^4.10.1",
     "@apollo/subgraph": "^2.7.0",
     "@sentry/node": "^10.60.0",
+    "@stellar/stellar-sdk": "^16.3.1",
     "ajv": "^8.17.1",
     "ajv-formats": "^3.0.1",
     "bcryptjs": "^2.4.3",
@@ -83,9 +87,11 @@
     "graphql": "^16.8.1",
     "graphql-tag": "^2.12.7",
     "graphql-ws": "^5.16.0",
+    "graphql-yoga": "^5.24.1",
     "handlebars": "^4.7.8",
     "helmet": "^7.1.0",
     "ioredis": "^5.11.1",
+    "ipaddr.js": "^1.9.1",
     "jsdom": "^30.0.1",
     "jsonwebtoken": "^9.0.0",
     "knex": "^3.1.0",
@@ -107,8 +113,10 @@
     "eslint-config-prettier": "^10.1.8",
     "eslint-plugin-import": "^2.32.0",
     "eslint-plugin-prettier": "^5.5.6",
+    "express-list-endpoints": "^7.1.1",
     "jest": "^29.7.0",
     "jest-cli": "^29.7.0",
-    "prettier": "^3.9.1"
+    "prettier": "^3.9.1",
+    "supertest": "^7.3.0"
   }
 }

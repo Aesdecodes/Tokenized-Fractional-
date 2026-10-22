@@ -9,11 +9,18 @@
  * - Error rates (counters & status tracking)
  * - Active WebSocket connections (gauge)
  * - Database connection pool utilization (gauges)
+ * - Disk usage on the volume holding DATA_FILE (gauge, issue #801)
+ * - WebSocket dead-letter-queue size, drops and failures (gauges, issue #902)
  */
+
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import prometheus from 'express-prom-bundle';
 import { wsManager } from '../../websocket.js';
+import { websocketDLQService } from './websocketDLQService.js';
 import { getPoolStats } from './database.js';
+import { readDiskUsageSync, resolveDataDirectory } from '../utils/diskUsage.js';
 
 const promClient = prometheus.promClient;
 const register = promClient.register;
@@ -102,6 +109,139 @@ export const dbPoolConnections = getOrRegister(promClient.Gauge, {
     }
   },
 });
+
+// ── 5. Disk usage (issue #801) ───────────────────────────────────────────────
+// The backend writes `data.json` to the instance's local disk. Scraping the
+// ratio here means the existing Prometheus/Grafana stack can alert on it with a
+// rule of its own, without the backend polling in the background: `collect()`
+// runs only when /metrics is scraped.
+//
+// BACKEND_ROOT is two levels up from this file (backend/src/services).
+const BACKEND_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+
+/**
+ * Disk usage ratio (used / total) for the volume holding DATA_FILE.
+ *
+ * Reports 0 when the filesystem cannot be measured. That is deliberate — a
+ * gauge that throws would fail the whole /metrics scrape and take every other
+ * metric down with it — but it does mean a monitoring rule should treat "ratio
+ * == 0 unexpectedly" as a measurement failure. The `available` bytes and the
+ * explicit status are surfaced on GET /health for that case.
+ */
+export const diskUsageRatio = getOrRegister(promClient.Gauge, {
+  name: 'disk_usage_ratio',
+  help: 'Disk usage ratio (used / total) for the volume holding DATA_FILE',
+  collect() {
+    try {
+      const usage = readDiskUsageSync(resolveDataDirectory(BACKEND_ROOT));
+      if (usage.status === 'unknown' || !usage.totalBytes) {
+        this.set(0);
+      } else {
+        this.set(usage.usedBytes / usage.totalBytes);
+      }
+    } catch {
+      this.set(0);
+    }
+  },
+});
+
+/**
+ * Bytes available to the backend on the volume holding DATA_FILE.
+ *
+ * `bavail` semantics: space an unprivileged process can actually write to, not
+ * the total free space including the root-reserved blocks.
+ */
+export const diskAvailableBytes = getOrRegister(promClient.Gauge, {
+  name: 'disk_available_bytes',
+  help: 'Bytes available to this process on the volume holding DATA_FILE',
+  collect() {
+    try {
+      const usage = readDiskUsageSync(resolveDataDirectory(BACKEND_ROOT));
+      this.set(usage.availableBytes || 0);
+    } catch {
+      this.set(0);
+    }
+  },
+});
+
+// ── 6. WebSocket dead-letter queue (issue #902) ──────────────────────────────
+// A sustained rise in buffered messages means many clients are disconnected
+// and not catching up. Alert rules: docs/WEBSOCKET_DLQ.md.
+//
+// prom-client collects metrics in parallel, so the gauges share one getStats()
+// call per scrape instead of each querying Redis.
+let dlqStatsPromise = null;
+function dlqStatsForScrape() {
+  if (!dlqStatsPromise) {
+    dlqStatsPromise = websocketDLQService.getStats().finally(() => {
+      setTimeout(() => {
+        dlqStatsPromise = null;
+      }, 1000).unref();
+    });
+  }
+  return dlqStatsPromise;
+}
+
+function dlqGauge(config, update) {
+  return getOrRegister(promClient.Gauge, {
+    ...config,
+    async collect() {
+      try {
+        update(this, await dlqStatsForScrape());
+      } catch {
+        // Leave the previous value; a throwing collect() would fail the scrape.
+      }
+    },
+  });
+}
+
+export const websocketDlqMessages = dlqGauge(
+  {
+    name: 'websocket_dlq_messages',
+    help: 'Messages currently buffered in the WebSocket DLQ, by scope (total, largest_channel)',
+    labelNames: ['scope'],
+  },
+  (g, stats) => {
+    g.set({ scope: 'total' }, stats.totalMessages);
+    g.set({ scope: 'largest_channel' }, stats.largestChannel);
+  },
+);
+
+export const websocketDlqChannels = dlqGauge(
+  {
+    name: 'websocket_dlq_channels',
+    help: 'Channels with at least one message buffered in the WebSocket DLQ',
+  },
+  (g, stats) => g.set(stats.channels),
+);
+
+export const websocketDlqRecentFailures = dlqGauge(
+  {
+    name: 'websocket_dlq_recent_delivery_failures',
+    help: 'Entries in the WebSocket DLQ delivery-failure log (capped at 1000)',
+  },
+  (g, stats) => g.set(stats.recentFailures),
+);
+
+export const websocketDlqOverThreshold = dlqGauge(
+  {
+    name: 'websocket_dlq_over_threshold',
+    help: '1 when buffered DLQ messages exceed WS_DLQ_ALERT_THRESHOLD, else 0',
+  },
+  (g, stats) => g.set(stats.overThreshold ? 1 : 0),
+);
+
+export const websocketDlqDropped = dlqGauge(
+  {
+    name: 'websocket_dlq_dropped_messages',
+    help: 'Messages dropped by DLQ retention since process start, by reason (size, age)',
+    labelNames: ['reason'],
+  },
+  (g, stats) => {
+    g.set({ reason: 'size' }, stats.droppedMessages.size);
+    g.set({ reason: 'age' }, stats.droppedMessages.age);
+  },
+);
 
 /**
  * Normalize express route path for high-cardinality metric label prevention

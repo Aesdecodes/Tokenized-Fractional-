@@ -4,6 +4,32 @@
 
 A full-stack decentralized application (dApp) built on the **Stellar Network** using **Soroban Smart Contracts**. This marketplace allows administrators to tokenize real-world assets into fractional shares for users to purchase.
 
+> [!WARNING]
+> **The smart contract has not been independently audited.** It custodies real
+> payment-token funds and holds a privileged admin key. Do not deploy it to
+> Stellar mainnet with real user funds until an independent audit has been
+> completed and its findings remediated. See
+> [Smart Contract Audit Status](#security--audit-status) below.
+
+## Security & Audit Status
+
+The Soroban contract in `contracts/` is **unaudited**: no independent third
+party has reviewed it. That is a material risk — the contract custodies
+payment-token balances and an admin key that can pause trading (state-changing
+operations only — read-only query functions keep working while paused), change
+the price, raise the share supply and withdraw tokens.
+
+| Component | Audit status |
+| --- | --- |
+| Smart contract (`contracts/`) | **Unaudited** — no independent review performed |
+| Backend API (`backend/`) | Not separately audited |
+| Frontend (`frontend/`) | Not separately audited |
+
+The current status, the mainnet risk disclaimer and the policy for re-auditing
+after significant contract changes are maintained in
+[SECURITY.md](SECURITY.md#smart-contract-audit-status). If you are evaluating a
+mainnet deployment, read that before funding the contract.
+
 ## Walkthrough Demo
 
 [![Watch the Demo](assets/play_banner.png)](assets/marketplace_demo.webp)
@@ -98,12 +124,18 @@ graph TB
 - [Jenkins Integration Pipeline](docs/jenkins.md)
 - [Contract Resource Benchmarks](docs/contract-benchmarks.md)
 - [Architecture Overview & Diagrams](docs/architecture.md)
+- [Infrastructure Inventory & IaC Boundary](docs/infrastructure.md) — What is managed by `render.yaml` / Terraform, what is still provisioned by hand, and how to apply the database
 - [Architecture Decision Records (ADRs)](docs/adr/README.md) — Technical decisions and rationale
+- [Security Policy & Audit Status](SECURITY.md) — Vulnerability reporting, current smart-contract audit status, mainnet risk disclaimer, and re-audit policy
+- [Asset Admission and Trust Review](docs/asset-admission-and-trust.md) — Issuer and asset checks, approval gates, user disclosures, and ongoing review expectations
+- [Stellar and Soroban Glossary](docs/stellar-glossary.md) — Plain-language definitions and official documentation links for common ecosystem terms
 - [Security Best Practices Guide](docs/security.md) — Security guidelines, audit checklist, and incident response
 - [Observability Guide](docs/OBSERVABILITY.md) — Structured logging, request IDs, secret redaction, Sentry alerting, and the ELK log pipeline
 - [Performance Benchmarks](docs/performance.md) — Gas costs, API latency, frontend metrics
 - [CDN Configuration](docs/cdn.md) — Serve frontend assets and uploaded media through Cloudflare
 - [Troubleshooting Guide](docs/troubleshooting.md) — Common issues and solutions
+- [Incident Response Playbook](docs/incident-response.md) — One coordinated sequence across the contract, backend, and DNS/CDN tiers
+- [Contract Address Verification](docs/contract-address-verification.md) — The signed canonical manifest of official contract addresses and how the frontend checks it
 - [Multi-Region Deployment](docs/multi-region-deployment.md) — Deployment strategy and failover
 - [Kubernetes Deployment](docs/kubernetes-deployment.md) — Kubernetes manifests, scaling, and self-healing
 - [Deploying Your Own Instance](docs/deploying-your-own-instance.md) — Checklist for forks running an independent, rebranded production deployment (distinct from local development setup)
@@ -272,6 +304,33 @@ DATA_FILE=data.json
 # ASSET_CDN_URL=https://assets-cdn.example.com
 ```
 
+#### Environment variables
+
+The backend validates its environment **at startup** (`backend/env.js`) and exits
+with a clear error listing every problem if a required value is missing or
+invalid — it never silently falls back to a development default. Validation is
+skipped only when `NODE_ENV=test` so the test suite can run without a full
+production environment. Secret values are redacted from the error output.
+
+| Variable | Required | Validation | Notes |
+| --- | --- | --- | --- |
+| `ADMIN_API_KEY` | ✅ | non-empty, **≥ 16 characters** | Secret. Guards all write endpoints. |
+| `CORS_ORIGINS` | ✅ | comma-separated; each entry a valid `http(s)` origin or `*` | No default fallback. |
+| `DATA_FILE` | ✅ | relative path ending in `.json`, no `..` | Asset store. `data.json` in production. |
+| `PORT` | | integer `1–65535` | Default `3001`. |
+| `NODE_ENV` | | `development` \| `test` \| `production` \| `staging` | Default `development`. |
+| `LOG_LEVEL` | | `trace` \| `debug` \| `info` \| `warn` \| `error` \| `fatal` \| `silent` | Default `info`. |
+| `WEBHOOK_DATA_FILE` | | relative `.json` path, no `..` | Default `webhooks.json`. |
+| `CACHE_TTL_SECONDS` | | positive integer | Redis cache TTL. |
+| `REDIS_URL` | | `redis://` or `rediss://` | Secret. Enables the Redis cache + distributed rate limiting. |
+| `PINATA_JWT` | | non-empty | Secret. IPFS document uploads. |
+| `PINATA_GATEWAY` | | `http(s)` URL | Default `https://gateway.pinata.cloud`. |
+| `CDN_URL` | | `http(s)` URL | Base URL for relative asset paths. |
+| `SENTRY_DSN` | | `http(s)` URL | Secret. Error tracking (logs only when unset). |
+
+Run `cp backend/.env.example backend/.env` and fill in the required values, or
+set them in your deployment dashboard (see [`render.yaml`](./render.yaml)).
+
 ### 6. Run the Application
 
 ```bash
@@ -370,12 +429,29 @@ Keep ports 80 and 443 reachable so HTTP-01 renewal can complete. Check the renew
 | `get_total_shares` | Query total shares | None |
 | `get_price` | Query price per share | None |
 | `get_admin` | Query the address that currently administers the contract | None |
+| `get_holders` | Enumerate every address with a registered share position (on-chain cap table) | None |
+| `get_payment_token` | Query the default payment token | None |
+| `get_accepted_tokens` | Query the list of accepted payment tokens | None |
+| `add_payment_token` | Add a token to the accepted payment list | Admin |
+| `remove_payment_token` | Remove a token from the accepted payment list (default cannot be removed) | Admin |
+| `update_payment_token` | Migrate the default payment token (paused marketplace only; requires no outstanding unclaimed funds in the old token) | Admin |
+| `deposit_distribution` | Deposit asset income for pro-rata distribution to holders | Admin |
+| `claim_distribution` | Claim accrued income distribution | Holder |
+| `get_pending_distribution` | Query the income a holder can currently claim | None |
+| `get_unclaimed_distribution` | Query total deposited-but-unclaimed income | None |
 | `update_price` | Correct the price per share (paused marketplace only) | Admin |
 | `increase_total_shares` | Add supply for a follow-on offering (paused marketplace only) | Admin |
 | `is_paused` | Check if paused | None |
-| `pause` | Pause marketplace | Admin |
+| `pause` | Pause marketplace (blocks state-changing operations only) | Admin |
 | `unpause` | Unpause marketplace | Admin |
 | `emergency_withdraw` | Withdraw tokens from contract | Admin |
+
+> **Pause semantics:** `pause` blocks only state-changing operations (buys,
+> transfers, sell orders, buybacks). Read-only `get_*` functions — including
+> `get_shares`, `get_price`, `get_holders` and `get_contract_metadata` — keep
+> returning normal values while paused, so dashboards and explorers stay live
+> during an incident. See
+> [docs/architecture.md](docs/architecture.md#pause-semantics).
 
 ### Compliance and Regulatory Limitations
 
@@ -436,12 +512,28 @@ When users buy shares, they receive **SEP-41 compliant NFT certificates** repres
 
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
 | `GET` | `/health` | No | Health check |
-| `GET` | `/api/rwa` | No | List all assets |
-| `GET` | `/api/rwa/:contractId` | No | Get asset metadata |
-| `POST` | `/api/rwa` | `x-api-key` | Create/update asset |
-| `PATCH` | `/api/rwa/:contractId` | `x-api-key` | Partial update (specific fields only) |
-| `DELETE` | `/api/rwa/:contractId` | `x-api-key` | Delete asset |
+| `GET` | `/api/v1/rwa` | No | List approved assets |
+| `GET` | `/api/v1/rwa/:contractId` | No | Get asset metadata |
+| `GET` | `/api/v1/rwa/search` | No | Full-text search (facets + relevance) |
+| `GET` | `/api/v1/rwa/pending` | `x-api-key` | List assets awaiting review |
+| `POST` | `/api/v1/rwa` | `x-api-key` | Create asset |
+| `PATCH` | `/api/v1/rwa/:contractId` | `x-api-key` | Partial update (specific fields only) |
+| `DELETE` | `/api/v1/rwa/:contractId` | `x-api-key` | Delete asset |
+
+### API Versioning
+
+All resource routes are versioned under **`/api/v1`** — use that prefix for new
+integrations. The unversioned `/api/*` paths remain as a backward-compatible
+alias of `/api/v1` and return `Deprecation: true` plus a
+`Link: </api/v1>; rel="successor-version"` header; every API response carries
+`X-API-Version: 1`. Infrastructure endpoints (`/health`, `/metrics`,
+`/api-docs*`, `/api/batch`) are intentionally unversioned.
+
+See **[docs/api-versioning.md](docs/api-versioning.md)** for the compatibility
+guarantees, the deprecation process, and the procedure for introducing `v2`.
 
 Interactive API documentation is available at [`/api-docs`](http://localhost:3001/api-docs) (Swagger UI) and [`/api-docs.json`](http://localhost:3001/api-docs.json) (raw OpenAPI spec) when the backend is running.
 
